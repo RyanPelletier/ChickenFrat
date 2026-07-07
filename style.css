@@ -331,4 +331,4 @@ button, input{ font-family: inherit; }
   padding: 10px;
 }
 
-.hidden{ display: none !important; }
+.hidden, [hidden]{ display: none !important; }
