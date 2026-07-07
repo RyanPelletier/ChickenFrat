@@ -93,7 +93,7 @@ button, input{ font-family: inherit; }
 }
 .meter-value.big{ font-size: 1rem; min-width: 30px; }
 
-.hud-status{ flex: 1; display: flex; justify-content: center; }
+.hud-status{ flex: 1; display: flex; justify-content: center; gap: 10px; }
 
 .party-fowl-banner{
   font-family: var(--font-display);
@@ -106,6 +106,7 @@ button, input{ font-family: inherit; }
   font-size: 0.85rem;
   animation: fowl-pulse 0.9s ease-in-out infinite;
 }
+.jail-banner{ background: var(--cf-navy); }
 @keyframes fowl-pulse{
   0%, 100%{ transform: scale(1); }
   50%{ transform: scale(1.05); }
