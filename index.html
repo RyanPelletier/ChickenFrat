@@ -30,12 +30,12 @@
     </div>
 
     <div class="hud-status">
-      <span id="party-fowl-banner" class="party-fowl-banner hidden">PARTY FOWL — beer locked <span id="party-fowl-timer">5:00</span></span>
+      <span id="party-fowl-banner" class="party-fowl-banner" hidden>PARTY FOWL — beer locked <span id="party-fowl-timer">5:00</span></span>
     </div>
 
     <div class="hud-account">
       <span id="hud-username" class="hud-username"></span>
-      <button id="hud-signout-btn" class="btn-small hidden" type="button">Sign Out</button>
+      <button id="hud-signout-btn" class="btn-small" type="button" hidden>Sign Out</button>
     </div>
   </header>
 
@@ -44,13 +44,13 @@
     <canvas id="game-canvas" width="960" height="600" tabindex="0"></canvas>
 
     <!-- Contextual action prompt near stations -->
-    <button id="station-action-btn" class="station-action-btn hidden" type="button"></button>
+    <button id="station-action-btn" class="station-action-btn" type="button" hidden></button>
 
     <!-- Chunder Clock overlay -->
-    <div id="chunder-clock" class="chunder-clock hidden">
-      <svg viewBox="0 0 100 100" class="chunder-ring">
-        <circle cx="50" cy="50" r="44" class="chunder-ring-bg"/>
-        <circle cx="50" cy="50" r="44" class="chunder-ring-fg" id="chunder-ring-fg"/>
+    <div id="chunder-clock" class="chunder-clock" hidden>
+      <svg viewBox="0 0 100 100" class="chunder-ring" width="74" height="74">
+        <circle cx="50" cy="50" r="44" class="chunder-ring-bg" fill="none" stroke="rgba(255,255,255,0.55)" stroke-width="8"/>
+        <circle cx="50" cy="50" r="44" class="chunder-ring-fg" id="chunder-ring-fg" fill="none" stroke="#E8433D" stroke-width="8" stroke-linecap="round"/>
       </svg>
       <div class="chunder-label">RUN TO THE BATHROOM</div>
       <div class="chunder-seconds" id="chunder-seconds">10</div>
@@ -75,7 +75,7 @@
           <button type="submit" class="btn">Sign In</button>
         </form>
 
-        <form id="signup-form" class="auth-form hidden">
+        <form id="signup-form" class="auth-form" hidden>
           <input type="text" id="signup-displayname" placeholder="Frat Name (shown to others)" required maxlength="24">
           <input type="email" id="signup-email" placeholder="Email" required autocomplete="email">
           <input type="password" id="signup-password" placeholder="Password (6+ characters)" required minlength="6" autocomplete="new-password">
@@ -88,14 +88,14 @@
         <p class="auth-error" id="auth-error"></p>
       </div>
 
-      <p class="auth-config-notice hidden" id="auth-config-notice">
+      <p class="auth-config-notice" id="auth-config-notice" hidden>
         This game isn't connected to Firebase yet — see <code>FIREBASE_SETUP.md</code> in the project files.
       </p>
     </div>
   </div>
 
   <!-- ===================== GAME OVERLAY (loading / misc) ===================== -->
-  <div id="loading-overlay" class="overlay hidden">
+  <div id="loading-overlay" class="overlay" hidden>
     <div class="overlay-card">
       <p>Waking up the chickens…</p>
     </div>
