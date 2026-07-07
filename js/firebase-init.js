@@ -24,7 +24,7 @@ const firebaseConfig = {
   storageBucket: "chickenfrat-7deeb.firebasestorage.app",
   messagingSenderId: "118353333006",
   appId: "1:118353333006:web:42c18a604b78fd5a68255f",
-  databaseURL: "YOUR_DATABASE_URL"
+  databaseURL: "https://chickenfrat-7deeb-default-rtdb.firebaseio.com/"
 };
 // ------------------------------------------
 
