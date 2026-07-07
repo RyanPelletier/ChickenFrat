@@ -39,7 +39,11 @@ function friendlyAuthError(err){
   if (code.includes("invalid-credential") || code.includes("wrong-password") || code.includes("user-not-found")) return "Email or password's off — try again.";
   if (code.includes("weak-password")) return "Password needs to be at least 6 characters.";
   if (code.includes("invalid-email")) return "That email doesn't look right.";
-  return "Something broke. Try again in a sec.";
+  if (code.includes("operation-not-allowed")) return "This sign-in method isn't turned on yet in the Firebase Console (Authentication → Sign-in method).";
+  if (code.includes("network-request-failed")) return "Network hiccup — check your connection and try again.";
+  if (code.includes("popup-closed-by-user")) return "Google sign-in window closed before finishing.";
+  if (code.includes("unauthorized-domain")) return "This domain isn't authorized yet — add it under Authentication → Settings → Authorized domains.";
+  return code ? `Something broke (${code}).` : "Something broke. Try again in a sec.";
 }
 
 /* ---------------- tab switching ---------------- */
@@ -74,6 +78,8 @@ signupForm.addEventListener("submit", async (e) => {
 
   if (!displayName){ showError("Every frat brother needs a name."); return; }
 
+  const submitBtn = signupForm.querySelector("button[type=submit]");
+  submitBtn.disabled = true;
   try{
     const cred = await createUserWithEmailAndPassword(auth, email, password);
     await updateProfile(cred.user, { displayName });
@@ -81,6 +87,8 @@ signupForm.addEventListener("submit", async (e) => {
   }catch(err){
     console.error(err);
     showError(friendlyAuthError(err));
+  }finally{
+    submitBtn.disabled = false;
   }
 });
 
@@ -90,11 +98,15 @@ signinForm.addEventListener("submit", async (e) => {
   showError("");
   const email = document.getElementById("signin-email").value.trim();
   const password = document.getElementById("signin-password").value;
+  const submitBtn = signinForm.querySelector("button[type=submit]");
+  submitBtn.disabled = true;
   try{
     await signInWithEmailAndPassword(auth, email, password);
   }catch(err){
     console.error(err);
     showError(friendlyAuthError(err));
+  }finally{
+    submitBtn.disabled = false;
   }
 });
 
@@ -119,16 +131,21 @@ if (isFirebaseConfigured){
   onAuthStateChanged(auth, async (user) => {
     if (user){
       const displayName = user.displayName || "Anonymous Chicken";
-      const playerData = await ensurePlayerDoc(user.uid, displayName);
-      startPlayerSession(user.uid);
+      try{
+        const playerData = await ensurePlayerDoc(user.uid, displayName);
+        startPlayerSession(user.uid);
 
-      hudUsername.textContent = displayName;
-      hudSignoutBtn.hidden = false;
-      authOverlay.hidden = true;
+        hudUsername.textContent = displayName;
+        hudSignoutBtn.hidden = false;
+        authOverlay.hidden = true;
 
-      window.dispatchEvent(new CustomEvent("cf:authready", {
-        detail: { uid: user.uid, displayName, playerData }
-      }));
+        window.dispatchEvent(new CustomEvent("cf:authready", {
+          detail: { uid: user.uid, displayName, playerData }
+        }));
+      }catch(err){
+        console.error("[ChickenFrat] Signed in, but couldn't load/create player data:", err);
+        showError("Signed in, but couldn't reach your save data. Check that Firestore Database is created in the Firebase Console (Build → Firestore Database), then refresh.");
+      }
     }else{
       stopPlayerSession();
       hudUsername.textContent = "";
