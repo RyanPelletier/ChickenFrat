@@ -1,0 +1,48 @@
+# Chicken Frat 🐔
+
+A 2D top-down social hangout / idle clicker — Club Penguin meets Animal Crossing, wrapped in goofy fraternity satire.
+
+## Status: Phase 1
+
+This build has:
+- A single map with four zones (Frat House Interior, Gym, Backyard, Front Lawn)
+- The three core clickers: **Eat Seed** → fills Protein, **Work Out** → converts Protein into permanent Strength (no gains without seed, per the brief), **Drink Beer** → temporary Strength boost + speed penalty + wobble
+- The **Chunder Clock**: max out your Beer meter and you've got 10 seconds to reach the bathroom stall before it's a **Party Fowl** (5-minute beer lockout)
+- Firebase Auth (email/password + Google) and Firestore-backed persistent Strength, so progress survives a refresh
+
+**Not yet built** (map signposts for these are visible but inert — see roadmap below): picking up chicks, the Cockfight Ring PvP, cosmetics, proximity chat, the slur filter, and seeing other players in real time.
+
+## Controls
+
+- **Move:** WASD or arrow keys
+- **Interact:** walk up to a station's glowing icon, then click the button that pops up (or press Space)
+
+## Setup
+
+See [`FIREBASE_SETUP.md`](./FIREBASE_SETUP.md) for a step-by-step guide to creating your Firebase project, enabling Auth + Firestore, and deploying to GitHub Pages. Until you've pasted your config into `js/firebase-init.js`, the game runs fine locally but shows a "not connected" notice instead of the sign-in form.
+
+## Project structure
+
+```
+chicken-frat/
+├── index.html
+├── css/
+│   └── style.css
+├── js/
+│   ├── firebase-init.js   ← paste your Firebase config here
+│   ├── auth.js             sign-up/in, Google auth, auth state
+│   ├── player-data.js       Firestore read/write (throttled)
+│   └── game.js              canvas rendering, movement, clickers
+├── FIREBASE_SETUP.md
+└── README.md
+```
+
+Every tunable number (speeds, meter maxes, cooldowns, the Chunder Clock countdown, the Party Fowl lockout duration) lives in the `CONFIG` block at the top of `game.js` — change a value, reload the page, no backend involved.
+
+## Roadmap
+
+- **Phase 2:** Realtime Database for live multiplayer positions + proximity chat bubbles that fade with distance
+- **Phase 3:** Picking up chicks for XP/Clout, Sloppy Mac penalty, the slur filter in chat
+- **Phase 4:** Cockfight Ring auto-battler PvP based on Strength, cosmetic unlocks and customization
+
+Each phase builds on this one without needing to rearchitect what's already here — Firestore stays the source of truth for slow-changing per-player stats, and Realtime Database (added in Phase 2) will own the fast-changing, ephemeral stuff like live position and chat.
