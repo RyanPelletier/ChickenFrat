@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=no">
+<title>Chicken Frat</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;700;800&family=Nunito:wght@500;700;800&family=JetBrains+Mono:wght@600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+  <!-- ===================== TOP HUD BAR ===================== -->
+  <header id="hud-bar">
+    <div class="hud-meters">
+      <div class="meter meter-protein" title="Protein Meter">
+        <span class="meter-icon">🌾</span>
+        <div class="meter-track"><div class="meter-fill" id="meter-protein-fill"></div></div>
+        <span class="meter-value" id="meter-protein-value">0</span>
+      </div>
+      <div class="meter meter-strength" title="Strength">
+        <span class="meter-icon">💪</span>
+        <span class="meter-value big" id="meter-strength-value">0</span>
+      </div>
+      <div class="meter meter-beer" title="Beer Level">
+        <span class="meter-icon">🍺</span>
+        <div class="meter-track"><div class="meter-fill" id="meter-beer-fill"></div></div>
+        <span class="meter-value" id="meter-beer-value">0</span>
+      </div>
+    </div>
+
+    <div class="hud-status">
+      <span id="party-fowl-banner" class="party-fowl-banner hidden">PARTY FOWL — beer locked <span id="party-fowl-timer">5:00</span></span>
+    </div>
+
+    <div class="hud-account">
+      <span id="hud-username" class="hud-username"></span>
+      <button id="hud-signout-btn" class="btn-small hidden" type="button">Sign Out</button>
+    </div>
+  </header>
+
+  <!-- ===================== GAME WORLD ===================== -->
+  <main id="game-wrap">
+    <canvas id="game-canvas" width="960" height="600" tabindex="0"></canvas>
+
+    <!-- Contextual action prompt near stations -->
+    <button id="station-action-btn" class="station-action-btn hidden" type="button"></button>
+
+    <!-- Chunder Clock overlay -->
+    <div id="chunder-clock" class="chunder-clock hidden">
+      <svg viewBox="0 0 100 100" class="chunder-ring">
+        <circle cx="50" cy="50" r="44" class="chunder-ring-bg"/>
+        <circle cx="50" cy="50" r="44" class="chunder-ring-fg" id="chunder-ring-fg"/>
+      </svg>
+      <div class="chunder-label">RUN TO THE BATHROOM</div>
+      <div class="chunder-seconds" id="chunder-seconds">10</div>
+    </div>
+  </main>
+
+  <!-- ===================== AUTH OVERLAY ===================== -->
+  <div id="auth-overlay" class="overlay">
+    <div class="overlay-card">
+      <h1 class="game-title">🐔 CHICKEN&nbsp;FRAT 🐔</h1>
+      <p class="game-tagline">Eat seed. Get swole. Don't be a party fowl.</p>
+
+      <div id="auth-forms">
+        <div class="auth-tabs">
+          <button type="button" class="auth-tab active" data-tab="signin">Sign In</button>
+          <button type="button" class="auth-tab" data-tab="signup">Sign Up</button>
+        </div>
+
+        <form id="signin-form" class="auth-form">
+          <input type="email" id="signin-email" placeholder="Email" required autocomplete="email">
+          <input type="password" id="signin-password" placeholder="Password" required autocomplete="current-password">
+          <button type="submit" class="btn">Sign In</button>
+        </form>
+
+        <form id="signup-form" class="auth-form hidden">
+          <input type="text" id="signup-displayname" placeholder="Frat Name (shown to others)" required maxlength="24">
+          <input type="email" id="signup-email" placeholder="Email" required autocomplete="email">
+          <input type="password" id="signup-password" placeholder="Password (6+ characters)" required minlength="6" autocomplete="new-password">
+          <button type="submit" class="btn">Create Account</button>
+        </form>
+
+        <div class="auth-divider"><span>or</span></div>
+        <button type="button" id="google-signin-btn" class="btn btn-google">Continue with Google</button>
+
+        <p class="auth-error" id="auth-error"></p>
+      </div>
+
+      <p class="auth-config-notice hidden" id="auth-config-notice">
+        This game isn't connected to Firebase yet — see <code>FIREBASE_SETUP.md</code> in the project files.
+      </p>
+    </div>
+  </div>
+
+  <!-- ===================== GAME OVERLAY (loading / misc) ===================== -->
+  <div id="loading-overlay" class="overlay hidden">
+    <div class="overlay-card">
+      <p>Waking up the chickens…</p>
+    </div>
+  </div>
+
+  <script type="module" src="js/firebase-init.js"></script>
+  <script type="module" src="js/player-data.js"></script>
+  <script type="module" src="js/auth.js"></script>
+  <script type="module" src="js/game.js"></script>
+</body>
+</html>
