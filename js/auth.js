@@ -15,7 +15,7 @@ import {
   signOut,
   onAuthStateChanged,
   updateProfile
-} from "https://www.gstatic.com/firebasejs/10.13.0/firebase-auth.js";
+} from "https://www.gstatic.com/firebasejs/12.15.0/firebase-auth.js";
 import { ensurePlayerDoc, startPlayerSession, stopPlayerSession } from "./player-data.js";
 
 const authOverlay = document.getElementById("auth-overlay");
