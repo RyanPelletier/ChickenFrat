@@ -678,7 +678,7 @@ function draw(){
   ctx.font = "700 13px 'Baloo 2', sans-serif";
   ctx.fillStyle = COLORS.wallLine;
   ctx.globalAlpha = 0.55;
-  zones.forEach(z => ctx.fillText(z.label, z.x + 10, z.y + 20));
+  zones.forEach(z => ctx.fillText(z.label, z.x + 10, z.y + z.h - 10));
   ctx.globalAlpha = 1;
 
   lawnChairs.forEach(drawLawnChair);
@@ -795,7 +795,7 @@ function drawForest(){
     ctx.font = "700 13px 'Baloo 2', sans-serif";
     ctx.fillStyle = "#FFFFFF";
     ctx.globalAlpha = 0.65;
-    ctx.fillText("Forest", rect.x + 10, rect.y + 20);
+    ctx.fillText("Forest", rect.x + 10, rect.y + rect.h - 10);
     ctx.globalAlpha = 1;
   });
 
