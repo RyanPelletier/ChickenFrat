@@ -30,6 +30,7 @@
    ===================================================================== */
 
 import { queuePatch } from "./player-data.js";
+import { initMultiplayer, stopMultiplayer, updateLocalPresence, sendChatMessage, getOtherPlayers, isMultiplayerAvailable } from "./multiplayer.js";
 
 /* ==================== CONFIG — tweak freely ==================== */
 const CANVAS_W = 960;
@@ -93,6 +94,9 @@ const WOLF_ENCOUNTER_COOLDOWN_FRAMES = 100;
 const WOLF_WANDER_MIN_FRAMES = 100;
 const WOLF_WANDER_MAX_FRAMES = 260;
 
+const CHAT_BUBBLE_LIFESPAN_MS = 6000;
+const MAX_CHAT_VISIBLE_DISTANCE = 260; // beyond this, another player's speech bubble is fully faded
+
 const DEBUG = true;
 /* ==================== end config ==================== */
 
@@ -134,7 +138,9 @@ const COLORS = {
   jailBars: "#3A3A42",
   wolfBody: "#6B6B75",
   wolfDark: "#4A4A52",
-  wolfEye: "#E8433D"
+  wolfEye: "#E8433D",
+  remoteChicken: "#F2994A",
+  chatBubbleBg: "#FFFFFF"
 };
 
 /* ---------------- grid layout ----------------
@@ -242,10 +248,15 @@ let stationBtn, chunderClockEl, chunderRingFg, chunderSecondsEl;
 let partyFowlBanner, partyFowlTimerEl, jailBanner, jailTimerEl;
 
 let uid = null;
+let displayName = "";
 let running = false;
 let animId = null;
 let tick = 0;
 let drunkPhase = 0;
+
+let chatInputBar, chatInputEl;
+let chatOpen = false;
+let localChatBubble = null; // { text, sentAt }
 
 let player = { x: 400, y: 240, moving: false, carrying: [] };
 const keys = new Set();
@@ -280,13 +291,16 @@ function resetForNewSession(playerData){
 
 window.addEventListener("cf:authready", (e) => {
   uid = e.detail.uid;
+  displayName = e.detail.displayName;
   resetForNewSession(e.detail.playerData);
+  initMultiplayer(uid, displayName);
   startLoop();
   if (DEBUG) console.log("[ChickenFrat] session ready for", e.detail.displayName);
 });
 
 window.addEventListener("cf:signout", () => {
   uid = null;
+  stopMultiplayer();
   stopLoop();
 });
 
@@ -294,12 +308,29 @@ window.addEventListener("cf:signout", () => {
 const MOVE_KEYS = new Set(["ArrowUp","ArrowDown","ArrowLeft","ArrowRight","KeyW","KeyA","KeyS","KeyD"]);
 
 document.addEventListener("keydown", (e) => {
+  if (chatOpen) return; // let the chat input's own listener handle keys while typing
+  if (e.code === "Enter"){ e.preventDefault(); openChat(); return; }
   if (MOVE_KEYS.has(e.code)) { keys.add(e.code); e.preventDefault(); }
   if (e.code === "Space"){ e.preventDefault(); triggerInteraction(); }
 });
 document.addEventListener("keyup", (e) => {
+  if (chatOpen) return;
   if (MOVE_KEYS.has(e.code)) keys.delete(e.code);
 });
+
+function openChat(){
+  if (!running) return;
+  chatOpen = true;
+  keys.clear(); // don't leave the chicken drifting on whatever was held when Enter was pressed
+  chatInputBar.hidden = false;
+  chatInputEl.value = "";
+  chatInputEl.focus();
+}
+function closeChat(){
+  chatOpen = false;
+  chatInputBar.hidden = true;
+  chatInputEl.blur();
+}
 
 function currentSpeedMultiplier(){
   const penalty = (stats.beerLevel / BEER_MAX) * MAX_BEER_SPEED_PENALTY_FRACTION;
@@ -311,7 +342,7 @@ function carryCapacity(){
 function isJailed(){ return jailUntil > Date.now(); }
 
 function updateMovement(){
-  if (isJailed()){ player.moving = false; return; } // frozen in the cage
+  if (isJailed() || chatOpen){ player.moving = false; return; }
 
   let dx = 0, dy = 0;
   if (keys.has("ArrowUp") || keys.has("KeyW")) dy -= 1;
@@ -341,7 +372,7 @@ function updateMovement(){
 
 /* ==================== interaction targeting (stations + loose chicks) ==================== */
 function findNearestInteractable(){
-  if (isJailed()) return null;
+  if (isJailed() || chatOpen) return null;
   let best = null, bestDist = Infinity;
   for (const s of stations){
     const d = Math.hypot(player.x - s.x, player.y - s.y);
@@ -376,7 +407,7 @@ function interactableDisabled(hit){
 }
 
 function triggerInteraction(){
-  if (!running || isJailed() || !nearestInteractable) return;
+  if (!running || isJailed() || chatOpen || !nearestInteractable) return;
 
   if (nearestInteractable.kind === "chick"){
     if (player.carrying.length >= carryCapacity()) return;
@@ -584,6 +615,7 @@ function updateWolfEncounters(){
 function update(){
   tick++;
   updateMovement();
+  updateLocalPresence(player.x, player.y);
   nearestInteractable = findNearestInteractable();
   updateDelivery();
   updateChunder();
@@ -619,8 +651,107 @@ function draw(){
   lawnChairs.forEach(drawLawnChair);
   stations.forEach(drawStation);
   chicks.forEach(c => { if (!c.carried && c.roamRect !== ROAM_ZONES.street) drawChick(c); });
+  drawOtherPlayers();
   drawPlayer();
+  drawLocalChatBubble();
   drawToast();
+}
+
+/* ---------------- other players (Realtime Database presence) ---------------- */
+function drawOtherPlayers(){
+  const others = getOtherPlayers();
+  Object.values(others).forEach(op => {
+    drawRemoteChicken(op);
+    if (op.chat && op.chat.text){
+      const age = Date.now() - op.chat.sentAt;
+      if (age < CHAT_BUBBLE_LIFESPAN_MS){
+        const dist = Math.hypot(player.x - op.x, player.y - op.y);
+        const alpha = Math.max(0, 1 - dist / MAX_CHAT_VISIBLE_DISTANCE);
+        if (alpha > 0) drawChatBubble(op.x, op.y - PLAYER_RADIUS - 20, op.chat.text, alpha);
+      }
+    }
+  });
+}
+
+function drawRemoteChicken(op){
+  const x = op.x, y = op.y;
+  ctx.fillStyle = COLORS.remoteChicken;
+  ctx.beginPath();
+  ctx.ellipse(x, y, PLAYER_RADIUS * 0.9, PLAYER_RADIUS * 0.85, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = "rgba(31,42,68,0.3)";
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+
+  ctx.fillStyle = COLORS.chickenComb;
+  ctx.beginPath();
+  ctx.moveTo(x - 5, y - PLAYER_RADIUS * 0.9 + 2);
+  ctx.lineTo(x, y - PLAYER_RADIUS * 0.9 - 7);
+  ctx.lineTo(x + 5, y - PLAYER_RADIUS * 0.9 + 2);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.fillStyle = COLORS.chickenBeak;
+  ctx.beginPath();
+  ctx.moveTo(x + PLAYER_RADIUS * 0.7, y);
+  ctx.lineTo(x + PLAYER_RADIUS * 0.7 + 7, y + 3);
+  ctx.lineTo(x + PLAYER_RADIUS * 0.7, y + 6);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.font = "700 11px 'Baloo 2', sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillStyle = COLORS.wallLine;
+  ctx.fillText(op.displayName || "Chicken", x, y - PLAYER_RADIUS - 8);
+  ctx.textAlign = "left";
+}
+
+function drawChatBubble(x, y, text, alpha){
+  ctx.globalAlpha = alpha;
+  ctx.font = "700 12px 'Baloo 2', sans-serif";
+  const paddingX = 10;
+  const textWidth = ctx.measureText(text).width;
+  const boxW = textWidth + paddingX * 2;
+  const boxH = 22;
+  ctx.fillStyle = COLORS.chatBubbleBg;
+  ctx.strokeStyle = COLORS.wallLine;
+  ctx.lineWidth = 2;
+  roundedRect(ctx, x - boxW / 2, y - boxH, boxW, boxH, 8);
+  ctx.fill();
+  ctx.stroke();
+  // little tail pointing down at the chicken
+  ctx.beginPath();
+  ctx.moveTo(x - 5, y);
+  ctx.lineTo(x + 5, y);
+  ctx.lineTo(x, y + 6);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.fillStyle = COLORS.wallLine;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(text, x, y - boxH / 2);
+  ctx.textAlign = "left";
+  ctx.textBaseline = "alphabetic";
+  ctx.globalAlpha = 1;
+}
+
+function roundedRect(context, x, y, w, h, r){
+  context.beginPath();
+  context.moveTo(x + r, y);
+  context.arcTo(x + w, y, x + w, y + h, r);
+  context.arcTo(x + w, y + h, x, y + h, r);
+  context.arcTo(x, y + h, x, y, r);
+  context.arcTo(x, y, x + w, y, r);
+  context.closePath();
+}
+
+function drawLocalChatBubble(){
+  if (!localChatBubble) return;
+  const age = Date.now() - localChatBubble.sentAt;
+  if (age >= CHAT_BUBBLE_LIFESPAN_MS){ localChatBubble = null; return; }
+  drawChatBubble(player.x, player.y - PLAYER_RADIUS - 20, localChatBubble.text, 1);
 }
 
 /* ---------------- forest + jail + wolves ---------------- */
@@ -1155,11 +1286,32 @@ function initGame(){
   partyFowlTimerEl = document.getElementById("party-fowl-timer");
   jailBanner = document.getElementById("jail-banner");
   jailTimerEl = document.getElementById("jail-timer");
+  chatInputBar = document.getElementById("chat-input-bar");
+  chatInputEl = document.getElementById("chat-input");
 
   stationBtn.addEventListener("click", triggerInteraction);
 
+  chatInputEl.addEventListener("keydown", (e) => {
+    e.stopPropagation();
+    if (e.code === "Enter"){
+      e.preventDefault();
+      const text = chatInputEl.value.trim();
+      if (text){
+        sendChatMessage(text);
+        localChatBubble = { text, sentAt: Date.now() };
+      }
+      closeChat();
+    }else if (e.code === "Escape"){
+      e.preventDefault();
+      closeChat();
+    }
+  });
+
   draw();
-  if (DEBUG) console.log("[ChickenFrat] game.js loaded — map v2 (forest/jail/wolves)");
+  if (DEBUG){
+    console.log("[ChickenFrat] game.js loaded — map v2 (forest/jail/wolves) + multiplayer");
+    if (!isMultiplayerAvailable()) console.log("[ChickenFrat] Realtime Database not configured yet — multiplayer disabled until databaseURL is set in firebase-init.js");
+  }
 }
 
 document.addEventListener("DOMContentLoaded", initGame);
