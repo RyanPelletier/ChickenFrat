@@ -35,7 +35,10 @@
    ===================================================================== */
 
 import { queuePatch } from "./player-data.js";
-import { initMultiplayer, stopMultiplayer, updateLocalPresence, sendChatMessage, getOtherPlayers, isMultiplayerAvailable } from "./multiplayer.js";
+import {
+  initMultiplayer, stopMultiplayer, updateLocalPresence, sendChatMessage, getOtherPlayers, isMultiplayerAvailable,
+  getCockfightState, joinCockfight, leaveCockfight, consumeCockfightResult
+} from "./multiplayer.js";
 
 /* ==================== CONFIG — tweak freely ==================== */
 const CANVAS_W = 960;
@@ -107,6 +110,10 @@ const POOL_SPEED_MULTIPLIER = 0.35; // wading through water is slow
 // toilet
 const PEE_RELIEF_AMOUNT = 40;      // how much peeing brings the Beer meter down
 const TOILET_DISABLED_MS = 60 * 1000; // pooping breaks the toilet for this long
+
+// cockfight
+const COCKFIGHT_WIN_CLOUT = 25;
+const COCKFIGHT_LEAVE_RADIUS = 90; // wander this far from the ring while waiting and you auto-leave the queue
 
 const DEBUG = true;
 /* ==================== end config ==================== */
@@ -182,8 +189,27 @@ const stations = [
   { id: "beer", type: "beer", x: 560, y: 270, label: "Drink Beer" },
   { id: "bathroom", type: "bathroom", x: 590, y: 370, label: "Bathroom Stall" },
   { id: "gym", type: "gym", x: 800, y: 300, label: "Work Out" },
-  { id: "cockfight", type: "locked", x: 480, y: 100, label: "Cockfight Ring — coming soon" }
+  { id: "cockfight", type: "cockfight", x: 480, y: 100, label: "Cockfight Ring" }
 ];
+const COCKFIGHT_STATION = stations.find(s => s.id === "cockfight");
+
+/* ---------------- player cosmetics, won from the Cockfight Ring ---------------- */
+const PLAYER_COSMETIC_POOL = [
+  { kind: "bow",       color: "#FF8FB1" },
+  { kind: "bow",       color: "#3F8FD1" },
+  { kind: "bow",       color: "#6BBF4A" },
+  { kind: "cap",       color: "#E8433D" },
+  { kind: "shades",    color: "#1F2A44" },
+  { kind: "toga",      color: "#FFFFFF" },
+  { kind: "tophat",    color: "#1F2A44" },
+  { kind: "propeller", color: "#F6C945" }
+];
+function pickRandomCosmetic(owned){
+  const ownedKeys = new Set((owned || []).map(c => c.kind + c.color));
+  const unowned = PLAYER_COSMETIC_POOL.filter(c => !ownedKeys.has(c.kind + c.color));
+  const pool = unowned.length ? unowned : PLAYER_COSMETIC_POOL;
+  return pool[Math.floor(Math.random() * pool.length)];
+}
 
 /* ---------------- decorative front-lawn chairs ---------------- */
 const lawnChairs = [
@@ -287,7 +313,8 @@ let localChatBubble = null; // { text, sentAt }
 let player = { x: 400, y: 240, moving: false, carrying: [] };
 const keys = new Set();
 
-let stats = { protein: 0, baseStrength: 0, strengthBoost: 0, beerLevel: 0, clout: 0 };
+let stats = { protein: 0, baseStrength: 0, strengthBoost: 0, beerLevel: 0, clout: 0, cosmetics: [] };
+let equippedCosmetic = null; // {kind,color} — auto-equips the most recently won cosmetic
 
 let chunderActive = false;
 let chunderFramesLeft = 0;
@@ -305,6 +332,8 @@ function resetForNewSession(playerData){
   stats.beerLevel = 0;
   stats.baseStrength = (playerData && playerData.baseStrength) || 0;
   stats.clout = (playerData && playerData.clout) || 0;
+  stats.cosmetics = (playerData && playerData.cosmetics) || [];
+  equippedCosmetic = stats.cosmetics.length ? stats.cosmetics[stats.cosmetics.length - 1] : null;
   chunderActive = false;
   chunderFramesLeft = 0;
   partyFowlUntil = 0;
@@ -430,6 +459,7 @@ function interactableLabel(hit){
   if (s.type === "seed") return "Tap to eat seed";
   if (s.type === "gym") return stats.protein > 0 ? "Tap to lift" : "Nothing to lift — eat seed first";
   if (s.type === "beer") return partyFowlUntil > Date.now() ? "Locked — you're in the doghouse" : "Tap to chug";
+  if (s.type === "cockfight") return getCockfightState() === "waiting" ? "Waiting for a challenger... (tap to leave)" : "Enter the Cockfight Ring!";
   return s.label;
 }
 function interactableDisabled(hit){
@@ -466,6 +496,9 @@ function triggerInteraction(){
     stats.beerLevel = Math.min(BEER_MAX, stats.beerLevel + DRINK_GAIN);
     stats.strengthBoost = Math.min(STRENGTH_BOOST_CAP, stats.strengthBoost + STRENGTH_BOOST_PER_DRINK);
     if (stats.beerLevel >= BEER_MAX) startChunderClock();
+  }else if (s.type === "cockfight"){
+    if (getCockfightState() === "waiting") leaveCockfight();
+    else joinCockfight(stats.baseStrength + stats.strengthBoost);
   }
 }
 
@@ -670,7 +703,7 @@ function updateWolfEncounters(){
 function update(){
   tick++;
   updateMovement();
-  updateLocalPresence(player.x, player.y);
+  updateLocalPresence(player.x, player.y, equippedCosmetic);
   nearestInteractable = findNearestInteractable();
   updateDelivery();
   updateChunder();
@@ -678,7 +711,32 @@ function update(){
   updateChicks();
   updateWolves();
   updateWolfEncounters();
+  updateCockfight();
   if (toast && toast.framesLeft > 0) toast.framesLeft--;
+}
+
+function updateCockfight(){
+  // wander too far from the ring while waiting and you auto-leave the queue
+  if (getCockfightState() === "waiting"){
+    const dist = Math.hypot(player.x - COCKFIGHT_STATION.x, player.y - COCKFIGHT_STATION.y);
+    if (dist > COCKFIGHT_LEAVE_RADIUS) leaveCockfight();
+  }
+
+  const result = consumeCockfightResult();
+  if (!result) return;
+
+  if (result.won){
+    const cosmetic = pickRandomCosmetic(stats.cosmetics);
+    stats.cosmetics = [...stats.cosmetics, cosmetic];
+    stats.clout += COCKFIGHT_WIN_CLOUT;
+    equippedCosmetic = cosmetic;
+    queuePatch({ clout: stats.clout, cosmetics: stats.cosmetics });
+    showToast(`Won the cockfight! +${COCKFIGHT_WIN_CLOUT} Clout + new look`, COLORS.cloutGreen);
+    if (DEBUG) console.log("[ChickenFrat] cockfight WIN vs", result.opponentName, "- unlocked", cosmetic);
+  }else{
+    showToast(`Lost to ${result.opponentName || "a tough bird"} — no big deal`, COLORS.wallLine);
+    if (DEBUG) console.log("[ChickenFrat] cockfight loss vs", result.opponentName);
+  }
 }
 
 function draw(){
@@ -754,6 +812,8 @@ function drawRemoteChicken(op){
   ctx.lineTo(x + PLAYER_RADIUS * 0.7, y + 6);
   ctx.closePath();
   ctx.fill();
+
+  if (op.cosmetic) drawChickCosmetic({ cosmetic: op.cosmetic }, x, y, PLAYER_RADIUS * 0.9);
 
   ctx.font = "700 11px 'Baloo 2', sans-serif";
   ctx.textAlign = "center";
@@ -1157,14 +1217,17 @@ function drawGymRack(s){
 function drawFightRing(s){
   const { x, y } = s;
   const r = 34;
+  const waiting = getCockfightState() === "waiting";
+
   ctx.fillStyle = COLORS.ringDirt;
-  ctx.globalAlpha = 0.6;
+  ctx.globalAlpha = 0.75;
   ctx.beginPath();
   ctx.ellipse(x, y, r, r * 0.62, 0, 0, Math.PI * 2);
   ctx.fill();
   ctx.globalAlpha = 1;
+
   const posts = 6;
-  ctx.fillStyle = COLORS.ringPostLocked;
+  ctx.fillStyle = COLORS.troughWood;
   ctx.strokeStyle = COLORS.wallLine; ctx.lineWidth = 1.5;
   const postPoints = [];
   for (let i = 0; i < posts; i++){
@@ -1173,14 +1236,13 @@ function drawFightRing(s){
     postPoints.push([px, py]);
     ctx.beginPath(); ctx.arc(px, py, 3.5, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
   }
-  ctx.strokeStyle = "rgba(255,255,255,0.7)"; ctx.lineWidth = 2;
-  ctx.setLineDash([5, 4]);
+  ctx.strokeStyle = COLORS.kegTap; ctx.lineWidth = 2.5;
   ctx.beginPath();
   postPoints.forEach(([px, py], i) => i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py));
   ctx.closePath(); ctx.stroke();
-  ctx.setLineDash([]);
+
   ctx.font = "18px sans-serif"; ctx.textAlign = "center";
-  ctx.fillText("🔒", x, y + 5);
+  ctx.fillText(waiting ? "⏳" : "🐓", x, y + 5);
   ctx.textAlign = "left";
 }
 
@@ -1311,6 +1373,8 @@ function drawPlayer(){
   ctx.lineTo(x + PLAYER_RADIUS + 8, y + 3);
   ctx.lineTo(x + PLAYER_RADIUS - 4, y + 7);
   ctx.closePath(); ctx.fill();
+
+  if (equippedCosmetic) drawChickCosmetic({ cosmetic: equippedCosmetic }, x, y, PLAYER_RADIUS);
 
   ctx.globalAlpha = 1;
 
