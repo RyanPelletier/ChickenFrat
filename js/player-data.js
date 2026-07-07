@@ -26,6 +26,7 @@ function defaultPlayerDoc(displayName){
   return {
     displayName,
     baseStrength: 0,
+    clout: 0,
     cosmetics: [],
     createdAt: serverTimestamp(),
     lastSeen: serverTimestamp()
