@@ -104,6 +104,10 @@ const MAX_CHAT_VISIBLE_DISTANCE = 260; // beyond this, another player's speech b
 // pool
 const POOL_SPEED_MULTIPLIER = 0.35; // wading through water is slow
 
+// toilet
+const PEE_RELIEF_AMOUNT = 40;      // how much peeing brings the Beer meter down
+const TOILET_DISABLED_MS = 60 * 1000; // pooping breaks the toilet for this long
+
 const DEBUG = true;
 /* ==================== end config ==================== */
 
@@ -176,10 +180,9 @@ const POOL_ZONE = zones.find(z => z.key === "pool");
 const stations = [
   { id: "seed", type: "seed", x: 390, y: 270, label: "Eat Seed" },
   { id: "beer", type: "beer", x: 560, y: 270, label: "Drink Beer" },
-  { id: "bathroom", type: "bathroom", x: 590, y: 370, emoji: "🚽", label: "Bathroom Stall" },
+  { id: "bathroom", type: "bathroom", x: 590, y: 370, label: "Bathroom Stall" },
   { id: "gym", type: "gym", x: 800, y: 300, label: "Work Out" },
-  { id: "cockfight", type: "locked", x: 480, y: 100, label: "Cockfight Ring — coming soon" },
-  { id: "pool-pee", type: "pool-pee", x: 800, y: 505, emoji: "💦", label: "Pee in the pool 😈 (instant Party Fowl)" }
+  { id: "cockfight", type: "locked", x: 480, y: 100, label: "Cockfight Ring — coming soon" }
 ];
 
 /* ---------------- decorative front-lawn chairs ---------------- */
@@ -268,6 +271,7 @@ seedWolves(FOREST_RECT_RIGHT, 3, 5);
 let canvas, ctx;
 let stationBtn, chunderClockEl, chunderRingFg, chunderSecondsEl;
 let partyFowlBanner, partyFowlTimerEl, jailBanner, jailTimerEl;
+let toiletPeeBtn, toiletPoopBtn;
 
 let uid = null;
 let displayName = "";
@@ -290,6 +294,7 @@ let chunderFramesLeft = 0;
 let partyFowlUntil = 0;
 let fowlTimestamps = [];
 let jailUntil = 0;
+let toiletDisabledUntil = 0;
 let nearestInteractable = null;
 let toast = null;
 
@@ -305,6 +310,7 @@ function resetForNewSession(playerData){
   partyFowlUntil = 0;
   fowlTimestamps = [];
   jailUntil = 0;
+  toiletDisabledUntil = 0;
   player.x = 400;
   player.y = 240;
   player.carrying = [];
@@ -362,6 +368,7 @@ function carryCapacity(){
   return Math.min(CARRY_MAX_CAPACITY, CARRY_BASE_CAPACITY + Math.floor(stats.baseStrength / CARRY_STRENGTH_PER_SLOT));
 }
 function isJailed(){ return jailUntil > Date.now(); }
+function isToiletDisabled(){ return toiletDisabledUntil > Date.now(); }
 
 function updateMovement(){
   if (isJailed() || chatOpen){ player.moving = false; return; }
@@ -423,8 +430,6 @@ function interactableLabel(hit){
   if (s.type === "seed") return "Tap to eat seed";
   if (s.type === "gym") return stats.protein > 0 ? "Tap to lift" : "Nothing to lift — eat seed first";
   if (s.type === "beer") return partyFowlUntil > Date.now() ? "Locked — you're in the doghouse" : "Tap to chug";
-  if (s.type === "bathroom") return chunderActive ? "You made it — hurl in peace" : "Bathroom stall";
-  if (s.type === "pool-pee") return s.label;
   return s.label;
 }
 function interactableDisabled(hit){
@@ -461,11 +466,29 @@ function triggerInteraction(){
     stats.beerLevel = Math.min(BEER_MAX, stats.beerLevel + DRINK_GAIN);
     stats.strengthBoost = Math.min(STRENGTH_BOOST_CAP, stats.strengthBoost + STRENGTH_BOOST_PER_DRINK);
     if (stats.beerLevel >= BEER_MAX) startChunderClock();
-  }else if (s.type === "pool-pee"){
-    triggerPartyFowl("pool-pee");
-    showToast("PARTY FOWL! You peed in the pool", COLORS.fowlRed);
-    if (DEBUG) console.log("[ChickenFrat] instant Party Fowl — peed in the pool");
   }
+}
+
+/* ==================== toilet: pee or poop ==================== */
+function playerNearBathroom(){
+  const bathroom = stations.find(s => s.type === "bathroom");
+  return Math.hypot(player.x - bathroom.x, player.y - bathroom.y) < STATION_RADIUS;
+}
+function doPee(){
+  if (!running || isJailed() || chatOpen) return;
+  if (isToiletDisabled() || !playerNearBathroom()) return;
+  const relief = Math.min(stats.beerLevel, PEE_RELIEF_AMOUNT);
+  stats.beerLevel = Math.max(0, stats.beerLevel - PEE_RELIEF_AMOUNT);
+  showToast(relief > 0 ? `-${Math.round(relief)} Beer — ahh, relief` : "Nothing to relieve", COLORS.cloutGreen);
+  if (DEBUG) console.log("[ChickenFrat] peed — beer level now", stats.beerLevel);
+}
+function doPoop(){
+  if (!running || isJailed() || chatOpen) return;
+  if (isToiletDisabled() || !playerNearBathroom()) return;
+  toiletDisabledUntil = Date.now() + TOILET_DISABLED_MS;
+  triggerPartyFowl("poop");
+  showToast("PARTY FOWL! ...and now the toilet's broken", COLORS.fowlRed);
+  if (DEBUG) console.log("[ChickenFrat] pooped — instant Party Fowl, toilet out of order for 60s");
 }
 
 /* ==================== chick delivery ==================== */
@@ -554,7 +577,7 @@ function triggerPartyFowl(reason){
 function updateChunder(){
   if (!chunderActive) return;
   const bathroom = stations.find(s => s.type === "bathroom");
-  const nearBathroom = Math.hypot(player.x - bathroom.x, player.y - bathroom.y) < STATION_RADIUS;
+  const nearBathroom = !isToiletDisabled() && Math.hypot(player.x - bathroom.x, player.y - bathroom.y) < STATION_RADIUS;
   if (nearBathroom){ resolveChunderSuccess(); return; }
   chunderFramesLeft--;
   if (chunderFramesLeft <= 0) triggerPartyFowl("chunder");
@@ -995,8 +1018,55 @@ function drawStation(s){
   if (s.type === "seed") return drawTrough(s);
   if (s.type === "beer") return drawKeg(s);
   if (s.type === "gym") return drawGymRack(s);
+  if (s.type === "bathroom") return drawToilet(s);
   if (s.id === "cockfight") return drawFightRing(s);
   return drawGenericStation(s);
+}
+
+function drawToilet(s){
+  const { x, y } = s;
+  const broken = isToiletDisabled();
+  ctx.globalAlpha = broken ? 0.5 : 1;
+
+  // tank (back)
+  ctx.fillStyle = "#FFFFFF";
+  ctx.strokeStyle = COLORS.wallLine;
+  ctx.lineWidth = 2;
+  ctx.fillRect(x - 15, y - 32, 30, 18);
+  ctx.strokeRect(x - 15, y - 32, 30, 18);
+  ctx.fillRect(x - 17, y - 36, 34, 6); // tank lid overhang
+  ctx.strokeRect(x - 17, y - 36, 34, 6);
+
+  // bowl base
+  ctx.fillStyle = "#FFFFFF";
+  ctx.beginPath();
+  ctx.moveTo(x - 12, y - 14);
+  ctx.lineTo(x + 12, y - 14);
+  ctx.lineTo(x + 16, y + 12);
+  ctx.quadraticCurveTo(x, y + 22, x - 16, y + 12);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+
+  // seat ring (top, slightly darker to read as a separate piece)
+  ctx.fillStyle = "#E7E1CF";
+  ctx.beginPath();
+  ctx.ellipse(x, y - 14, 15, 6, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = "#FFFFFF";
+  ctx.beginPath();
+  ctx.ellipse(x, y - 14, 9, 3.5, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.globalAlpha = 1;
+
+  if (broken){
+    ctx.font = "16px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("🚫", x, y - 44);
+    ctx.textAlign = "left";
+  }
 }
 
 function drawGenericStation(s){
@@ -1276,15 +1346,40 @@ function syncHud(){
   document.getElementById("meter-strength-value").textContent = Math.floor(stats.baseStrength + stats.strengthBoost);
   document.getElementById("meter-clout-value").textContent = Math.floor(stats.clout);
 
-  if (nearestInteractable && !isJailed()){
+  const nearBathroomStation = nearestInteractable && nearestInteractable.kind === "station" && nearestInteractable.ref.type === "bathroom";
+
+  if (nearBathroomStation && !isJailed()){
+    const s = nearestInteractable.ref;
+    if (isToiletDisabled()){
+      stationBtn.hidden = false;
+      stationBtn.textContent = "Toilet out of order (" + Math.ceil((toiletDisabledUntil - Date.now()) / 1000) + "s)";
+      stationBtn.style.left = s.x + "px";
+      stationBtn.style.top = s.y + "px";
+      stationBtn.disabled = true;
+      toiletPeeBtn.hidden = true;
+      toiletPoopBtn.hidden = true;
+    }else{
+      stationBtn.hidden = true;
+      toiletPeeBtn.hidden = false;
+      toiletPeeBtn.style.left = (s.x - 48) + "px";
+      toiletPeeBtn.style.top = s.y + "px";
+      toiletPoopBtn.hidden = false;
+      toiletPoopBtn.style.left = (s.x + 48) + "px";
+      toiletPoopBtn.style.top = s.y + "px";
+    }
+  }else if (nearestInteractable && !isJailed()){
     stationBtn.hidden = false;
     const anchor = nearestInteractable.ref;
     stationBtn.textContent = interactableLabel(nearestInteractable);
     stationBtn.style.left = anchor.x + "px";
     stationBtn.style.top = anchor.y + "px";
     stationBtn.disabled = interactableDisabled(nearestInteractable);
+    toiletPeeBtn.hidden = true;
+    toiletPoopBtn.hidden = true;
   }else{
     stationBtn.hidden = true;
+    toiletPeeBtn.hidden = true;
+    toiletPoopBtn.hidden = true;
   }
 
   if (chunderActive){
@@ -1344,8 +1439,12 @@ function initGame(){
   jailTimerEl = document.getElementById("jail-timer");
   chatInputBar = document.getElementById("chat-input-bar");
   chatInputEl = document.getElementById("chat-input");
+  toiletPeeBtn = document.getElementById("toilet-pee-btn");
+  toiletPoopBtn = document.getElementById("toilet-poop-btn");
 
   stationBtn.addEventListener("click", triggerInteraction);
+  toiletPeeBtn.addEventListener("click", doPee);
+  toiletPoopBtn.addEventListener("click", doPoop);
 
   chatInputEl.addEventListener("keydown", (e) => {
     e.stopPropagation();
