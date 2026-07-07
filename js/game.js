@@ -24,7 +24,9 @@
    instantly based on your total Strength (base + beer boost) vs. the
    wolf's own strength: win and you gain Clout, lose and you take a
    Strength hit, lose badly (wildly outmatched) and your Strength is
-   wiped to zero.
+   wiped to zero. Each individual wolf DOUBLES its own strength every
+   time it's defeated, so farming the same wolf over and over stops
+   working fast — you have to keep building real Strength to keep up.
 
    Not in this build yet (see project README): the functioning Cockfight
    Ring, unlockable player cosmetics, the slur filter, and Sloppy Mac.
@@ -98,6 +100,7 @@ const CLOUT_PER_WOLF_WIN = 25;
 const WOLF_STRENGTH_LOSS = 15;
 const WOLF_DEATH_THRESHOLD_FRACTION = 0.4; // outmatched by this much = wiped, not just hurt
 const WOLF_ENCOUNTER_COOLDOWN_FRAMES = 100;
+const WOLF_STRENGTH_GROWTH_MULTIPLIER = 2; // each wolf gets this much tougher every time it's defeated — stops farm-killing the same one
 const WOLF_WANDER_MIN_FRAMES = 100;
 const WOLF_WANDER_MAX_FRAMES = 260;
 
@@ -671,8 +674,10 @@ function resolveWolfEncounter(w){
   if (totalStrength >= w.strength){
     stats.clout += CLOUT_PER_WOLF_WIN;
     queuePatch({ clout: stats.clout });
-    showToast(`+${CLOUT_PER_WOLF_WIN} Clout! Wolf defeated`, COLORS.cloutGreen);
-    if (DEBUG) console.log("[ChickenFrat] defeated a wolf (str " + w.strength + ")");
+    const oldStrength = w.strength;
+    w.strength = Math.round(w.strength * WOLF_STRENGTH_GROWTH_MULTIPLIER);
+    showToast(`+${CLOUT_PER_WOLF_WIN} Clout! Wolf defeated — it'll come back at ${w.strength} strength`, COLORS.cloutGreen);
+    if (DEBUG) console.log("[ChickenFrat] defeated a wolf (str " + oldStrength + ") — it grows to", w.strength);
   }else if (totalStrength < w.strength * WOLF_DEATH_THRESHOLD_FRACTION){
     stats.baseStrength = 0;
     stats.strengthBoost = 0;
