@@ -13,7 +13,7 @@
 import { db, isFirebaseConfigured } from "./firebase-init.js";
 import {
   doc, getDoc, setDoc, updateDoc, serverTimestamp
-} from "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js";
+} from "https://www.gstatic.com/firebasejs/12.15.0/firebase-firestore.js";
 
 const SAVE_INTERVAL_MS = 8000;
 
