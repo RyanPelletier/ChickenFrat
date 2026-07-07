@@ -1,13 +1,17 @@
 /* =====================================================================
    CHICKEN FRAT — game.js
-   Phase 1: single map, three core clickers (Seed / Gym / Beer), the
-   Chunder Clock + Party Fowl penalty, persistent Strength via Firestore.
+   Phase 1 (+ cosmetic/map polish pass): single map, three core clickers
+   (Seed / Gym / Beer), the Chunder Clock + Party Fowl penalty, persistent
+   Strength via Firestore, an animated chicken, a more built-out map
+   (house + gym buildings, backyard fight ring, front lawn chairs, a
+   street with wandering chicks outside the property), and beer-drunk
+   movement drift.
 
    Not in this build yet (coming in later phases, see project README):
-   picking up chicks, the Cockfight Ring, cosmetics, proximity chat,
-   the slur filter, and multiplayer position sync over Realtime Database.
-   Their map zones/signposts are drawn now so the world reads as whole,
-   but they don't do anything yet.
+   picking up chicks (the ones on the street are ambient/decorative only
+   for now), the functioning Cockfight Ring, cosmetics you can unlock,
+   proximity chat, the slur filter, and multiplayer position sync over
+   Realtime Database.
 
    This file knows nothing about Firebase directly — it only listens for
    `cf:authready` / `cf:signout` events from auth.js, and calls
@@ -18,7 +22,9 @@ import { queuePatch } from "./player-data.js";
 
 /* ==================== CONFIG — tweak freely ==================== */
 const CANVAS_W = 960;
-const CANVAS_H = 600;
+const PROPERTY_H = 600;   // house/gym/backyard/lawn area
+const STREET_H = 80;      // strip below the property
+const CANVAS_H = PROPERTY_H + STREET_H;
 
 const PLAYER_RADIUS = 16;
 const BASE_SPEED = 3.2;
@@ -36,11 +42,17 @@ const STRENGTH_BOOST_CAP = 120;
 const STRENGTH_BOOST_DECAY_PER_FRAME = 0.05;
 const BEER_LEVEL_DECAY_PER_FRAME = 0.03; // slow natural sobering-up
 
+const DRUNK_DRIFT_THRESHOLD = 35;  // beer level above which walking-straight gets hard
+const DRUNK_DRIFT_MAX = 2.6;       // px/frame of involuntary sideways stumble at max beer
+
 const CHUNDER_COUNTDOWN_FRAMES = 10 * 60; // 10s @ ~60fps
 const PARTY_FOWL_LOCKOUT_MS = 5 * 60 * 1000; // 5 minutes
 const CHUNDER_RING_CIRCUMFERENCE = 276.5; // 2*pi*44, matches the SVG ring radius
 
 const STATION_RADIUS = 46; // how close the player must be to interact
+
+const STREET_CHICK_COUNT = 6;
+const STREET_CHICK_SPEED = 0.6;
 
 const DEBUG = true;
 /* ==================== end config ==================== */
@@ -51,29 +63,69 @@ const COLORS = {
   backyard: "#8FDB6B",
   lawn: "#A9E88C",
   wallLine: "#1F2A44",
+  roof: "#B5433C",
+  roofGym: "#5B6472",
+  door: "#8B5A2B",
+  street: "#4A4A52",
+  sidewalk: "#C9C6BE",
+  laneLine: "#F6C945",
+  fence: "#D8CBB0",
   chickenBody: "#FFD23F",
   chickenComb: "#E8433D",
   chickenBeak: "#F2994A",
-  stationRing: "#1F2A44"
+  chickenLeg: "#F2994A",
+  stationRing: "#1F2A44",
+  troughWood: "#8B5A2B",
+  troughWoodDark: "#6B4222",
+  seedFill: "#F6C945",
+  kegMetal: "#C9CDD3",
+  kegMetalDark: "#9AA0A8",
+  kegBand: "#8B5A2B",
+  kegTap: "#E8433D",
+  barbellBar: "#4A4A52",
+  barbellPlate: "#1F2A44",
+  ringDirt: "#C79A5B",
+  ringPostLocked: "#9AA0A8",
+  chairSeat: "#E8433D",
+  chairSeat2: "#3F8FD1"
 };
 
 /* ---------------- zones ---------------- */
 const zones = [
-  { key: "house", label: "Frat House Interior", x: 0, y: 0, w: 480, h: 300, color: COLORS.house },
-  { key: "gym", label: "Gym", x: 480, y: 0, w: 480, h: 300, color: COLORS.gym },
-  { key: "backyard", label: "Backyard", x: 0, y: 300, w: 480, h: 300, color: COLORS.backyard },
-  { key: "lawn", label: "Front Lawn", x: 480, y: 300, w: 480, h: 300, color: COLORS.lawn }
+  { key: "house", label: "Frat House Interior", x: 20, y: 20, w: 430, h: 270, color: COLORS.house, roof: COLORS.roof, sign: null },
+  { key: "gym", label: "Gym", x: 510, y: 20, w: 430, h: 270, color: COLORS.gym, roof: COLORS.roofGym, sign: "GYM" },
+  { key: "backyard", label: "Backyard", x: 20, y: 320, w: 430, h: 260, color: COLORS.backyard },
+  { key: "lawn", label: "Front Lawn", x: 510, y: 320, w: 430, h: 260, color: COLORS.lawn }
 ];
 
 /* ---------------- stations ---------------- */
 const stations = [
-  { id: "seed", type: "seed", x: 150, y: 150, emoji: "🌾", label: "Eat Seed" },
-  { id: "beer", type: "beer", x: 360, y: 150, emoji: "🍺", label: "Drink Beer" },
-  { id: "bathroom", type: "bathroom", x: 440, y: 260, emoji: "🚽", label: "Bathroom Stall" },
-  { id: "gym", type: "gym", x: 720, y: 150, emoji: "🏋️", label: "Work Out" },
-  { id: "cockfight", type: "locked", x: 200, y: 460, emoji: "🐓", label: "Cockfight Ring — coming soon" },
-  { id: "chicks", type: "locked", x: 760, y: 460, emoji: "🐥", label: "Chicks to carry — coming soon" }
+  { id: "seed", type: "seed", x: 150, y: 160, label: "Eat Seed" },
+  { id: "beer", type: "beer", x: 350, y: 160, label: "Drink Beer" },
+  { id: "bathroom", type: "bathroom", x: 400, y: 250, emoji: "🚽", label: "Bathroom Stall" },
+  { id: "gym", type: "gym", x: 730, y: 160, label: "Work Out" },
+  { id: "cockfight", type: "locked", x: 230, y: 450, label: "Cockfight Ring — coming soon" },
+  { id: "chicks", type: "locked", x: 730, y: 450, emoji: "🐥", label: "Chicks to carry — coming soon" }
 ];
+
+/* ---------------- decorative front-lawn chairs (no interaction) ---------------- */
+const lawnChairs = [
+  { x: 610, y: 470, color: COLORS.chairSeat },
+  { x: 860, y: 480, color: COLORS.chairSeat2 },
+  { x: 900, y: 400, color: COLORS.chairSeat }
+];
+
+/* ---------------- wandering street chicks (ambient only, not pickup-able yet) ---------------- */
+const streetChicks = [];
+for (let i = 0; i < STREET_CHICK_COUNT; i++){
+  streetChicks.push({
+    x: 60 + Math.random() * (CANVAS_W - 120),
+    y: PROPERTY_H + 24 + Math.random() * (STREET_H - 48),
+    dir: Math.random() < 0.5 ? -1 : 1,
+    speed: STREET_CHICK_SPEED * (0.6 + Math.random() * 0.8),
+    legPhase: Math.floor(Math.random() * 100)
+  });
+}
 
 /* ---------------- state ---------------- */
 let canvas, ctx;
@@ -83,8 +135,10 @@ let partyFowlBanner, partyFowlTimerEl;
 let uid = null;
 let running = false;
 let animId = null;
+let tick = 0;
+let drunkPhase = 0;
 
-let player = { x: 240, y: 150, };
+let player = { x: 150, y: 110, moving: false };
 const keys = new Set();
 
 let stats = {
@@ -109,8 +163,8 @@ function resetForNewSession(playerData){
   chunderActive = false;
   chunderFramesLeft = 0;
   partyFowlUntil = 0;
-  player.x = 240;
-  player.y = 150;
+  player.x = 150;
+  player.y = 110;
 }
 
 window.addEventListener("cf:authready", (e) => {
@@ -148,11 +202,25 @@ function updateMovement(){
   if (keys.has("ArrowLeft") || keys.has("KeyA")) dx -= 1;
   if (keys.has("ArrowRight") || keys.has("KeyD")) dx += 1;
 
+  const moving = dx !== 0 || dy !== 0;
+  player.moving = moving;
   if (dx !== 0 && dy !== 0){ dx *= 0.7071; dy *= 0.7071; }
 
   const speed = BASE_SPEED * currentSpeedMultiplier();
-  player.x = Math.min(CANVAS_W - PLAYER_RADIUS, Math.max(PLAYER_RADIUS, player.x + dx * speed));
-  player.y = Math.min(CANVAS_H - PLAYER_RADIUS, Math.max(PLAYER_RADIUS, player.y + dy * speed));
+  let moveX = dx * speed;
+  let moveY = dy * speed;
+
+  // beer makes walking a straight line genuinely hard, not just cosmetic wobble
+  if (moving && stats.beerLevel > DRUNK_DRIFT_THRESHOLD){
+    drunkPhase += 0.14;
+    const driftFrac = (stats.beerLevel - DRUNK_DRIFT_THRESHOLD) / (BEER_MAX - DRUNK_DRIFT_THRESHOLD);
+    const driftMag = driftFrac * DRUNK_DRIFT_MAX;
+    moveX += Math.sin(drunkPhase) * driftMag;
+    moveY += Math.cos(drunkPhase * 0.8) * driftMag * 0.6;
+  }
+
+  player.x = Math.min(CANVAS_W - PLAYER_RADIUS, Math.max(PLAYER_RADIUS, player.x + moveX));
+  player.y = Math.min(PROPERTY_H - PLAYER_RADIUS, Math.max(PLAYER_RADIUS, player.y + moveY));
 }
 
 /* ==================== stations ==================== */
@@ -221,7 +289,8 @@ function triggerPartyFowl(){
 
 function updateChunder(){
   if (!chunderActive) return;
-  const nearBathroom = Math.hypot(player.x - 440, player.y - 260) < STATION_RADIUS;
+  const bathroom = stations.find(s => s.type === "bathroom");
+  const nearBathroom = Math.hypot(player.x - bathroom.x, player.y - bathroom.y) < STATION_RADIUS;
   if (nearBathroom){ resolveChunderSuccess(); return; }
   chunderFramesLeft--;
   if (chunderFramesLeft <= 0) triggerPartyFowl();
@@ -233,16 +302,31 @@ function updateStatDecay(){
   if (!chunderActive && stats.beerLevel > 0) stats.beerLevel = Math.max(0, stats.beerLevel - BEER_LEVEL_DECAY_PER_FRAME);
 }
 
+/* ==================== street chicks (ambient) ==================== */
+function updateStreetChicks(){
+  streetChicks.forEach(c => {
+    c.x += c.dir * c.speed;
+    c.legPhase++;
+    if (c.x < 30){ c.x = 30; c.dir = 1; }
+    if (c.x > CANVAS_W - 30){ c.x = CANVAS_W - 30; c.dir = -1; }
+    if (Math.random() < 0.004) c.dir *= -1; // occasional aimless turn
+  });
+}
+
 /* ==================== update / draw ==================== */
 function update(){
+  tick++;
   updateMovement();
   nearestStation = findNearestStation();
   updateChunder();
   updateStatDecay();
+  updateStreetChicks();
 }
 
 function draw(){
   ctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
+
+  drawStreet();
 
   zones.forEach(z => {
     ctx.fillStyle = z.color;
@@ -252,17 +336,122 @@ function draw(){
   ctx.lineWidth = 3;
   zones.forEach(z => ctx.strokeRect(z.x, z.y, z.w, z.h));
 
+  zones.forEach(z => { if (z.roof) drawBuildingTopper(z); });
+
   ctx.font = "700 13px 'Baloo 2', sans-serif";
   ctx.fillStyle = COLORS.wallLine;
   ctx.globalAlpha = 0.55;
   zones.forEach(z => ctx.fillText(z.label, z.x + 10, z.y + 20));
   ctx.globalAlpha = 1;
 
+  lawnChairs.forEach(drawLawnChair);
   stations.forEach(drawStation);
   drawPlayer();
 }
 
+/* ---------------- street + wandering chicks ---------------- */
+function drawStreet(){
+  ctx.fillStyle = COLORS.sidewalk;
+  ctx.fillRect(0, PROPERTY_H, CANVAS_W, 14);
+
+  ctx.fillStyle = COLORS.street;
+  ctx.fillRect(0, PROPERTY_H + 14, CANVAS_W, STREET_H - 14);
+
+  // dashed lane line
+  ctx.strokeStyle = COLORS.laneLine;
+  ctx.lineWidth = 4;
+  ctx.setLineDash([26, 18]);
+  ctx.beginPath();
+  ctx.moveTo(0, PROPERTY_H + 14 + (STREET_H - 14) / 2);
+  ctx.lineTo(CANVAS_W, PROPERTY_H + 14 + (STREET_H - 14) / 2);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // low picket fence separating yard from sidewalk
+  ctx.fillStyle = COLORS.fence;
+  ctx.strokeStyle = COLORS.wallLine;
+  ctx.lineWidth = 1.5;
+  for (let x = 6; x < CANVAS_W; x += 22){
+    ctx.fillRect(x, PROPERTY_H - 14, 8, 16);
+    ctx.strokeRect(x, PROPERTY_H - 14, 8, 16);
+  }
+
+  streetChicks.forEach(drawStreetChick);
+}
+
+function drawStreetChick(c){
+  const legOffset = Math.floor(c.legPhase / 8) % 2 === 0 ? 2 : -2;
+  ctx.fillStyle = COLORS.chickenLeg;
+  ctx.fillRect(c.x - 3, c.y + 5, 2, 4 + legOffset * 0.3);
+  ctx.fillRect(c.x + 2, c.y + 5, 2, 4 - legOffset * 0.3);
+
+  ctx.fillStyle = COLORS.chickenBody;
+  ctx.beginPath();
+  ctx.ellipse(c.x, c.y, 8, 7, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = COLORS.chickenBeak;
+  ctx.beginPath();
+  const facing = c.dir >= 0 ? 1 : -1;
+  ctx.moveTo(c.x + facing * 6, c.y);
+  ctx.lineTo(c.x + facing * 11, c.y + 1.5);
+  ctx.lineTo(c.x + facing * 6, c.y + 3);
+  ctx.closePath();
+  ctx.fill();
+}
+
+/* ---------------- building toppers (roof + signage) ---------------- */
+function drawBuildingTopper(z){
+  const roofHeight = 26;
+  ctx.fillStyle = z.roof;
+  ctx.beginPath();
+  ctx.moveTo(z.x - 6, z.y);
+  ctx.lineTo(z.x + z.w / 2, z.y - roofHeight);
+  ctx.lineTo(z.x + z.w + 6, z.y);
+  ctx.closePath();
+  ctx.fill();
+  ctx.strokeStyle = COLORS.wallLine;
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  if (z.sign){
+    ctx.fillStyle = "#FFFFFF";
+    ctx.font = "700 12px 'Baloo 2', sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText(z.sign, z.x + z.w / 2, z.y - 8);
+    ctx.textAlign = "left";
+  }
+
+  // door connecting to the yard below
+  ctx.fillStyle = COLORS.door;
+  ctx.fillRect(z.x + z.w / 2 - 16, z.y + z.h - 4, 32, 4);
+}
+
+/* ---------------- decorative lawn chairs ---------------- */
+function drawLawnChair(c){
+  ctx.fillStyle = COLORS.troughWoodDark;
+  ctx.fillRect(c.x - 10, c.y + 10, 4, 10);
+  ctx.fillRect(c.x + 10, c.y + 10, 4, 10);
+
+  ctx.fillStyle = c.color;
+  ctx.fillRect(c.x - 12, c.y - 2, 26, 12);   // seat
+  ctx.fillRect(c.x - 12, c.y - 20, 26, 18);  // backrest
+  ctx.strokeStyle = COLORS.wallLine;
+  ctx.lineWidth = 1.5;
+  ctx.strokeRect(c.x - 12, c.y - 2, 26, 12);
+  ctx.strokeRect(c.x - 12, c.y - 20, 26, 18);
+}
+
+/* ---------------- stations ---------------- */
 function drawStation(s){
+  if (s.type === "seed") return drawTrough(s);
+  if (s.type === "beer") return drawKeg(s);
+  if (s.type === "gym") return drawGymRack(s);
+  if (s.type === "cockfight" || s.id === "cockfight") return drawFightRing(s);
+  return drawGenericStation(s);
+}
+
+function drawGenericStation(s){
   const locked = s.type === "locked";
   ctx.beginPath();
   ctx.arc(s.x, s.y, 22, 0, Math.PI * 2);
@@ -277,20 +466,175 @@ function drawStation(s){
   ctx.font = "20px sans-serif";
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
-  ctx.fillText(s.emoji, s.x, s.y + 1);
+  ctx.fillText(s.emoji || "?", s.x, s.y + 1);
   ctx.textAlign = "left";
   ctx.textBaseline = "alphabetic";
 }
 
+function drawTrough(s){
+  const { x, y } = s;
+  ctx.fillStyle = COLORS.troughWoodDark;
+  ctx.beginPath();
+  ctx.moveTo(x - 34, y + 6);
+  ctx.lineTo(x + 34, y + 6);
+  ctx.lineTo(x + 28, y + 18);
+  ctx.lineTo(x - 28, y + 18);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.fillStyle = COLORS.troughWood;
+  ctx.beginPath();
+  ctx.moveTo(x - 36, y - 10);
+  ctx.lineTo(x + 36, y - 10);
+  ctx.lineTo(x + 30, y + 8);
+  ctx.lineTo(x - 30, y + 8);
+  ctx.closePath();
+  ctx.fill();
+  ctx.strokeStyle = COLORS.wallLine;
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  // seed mound
+  ctx.fillStyle = COLORS.seedFill;
+  ctx.beginPath();
+  ctx.ellipse(x, y - 6, 24, 7, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = "#C9922A";
+  for (let i = -3; i <= 3; i++){
+    ctx.beginPath();
+    ctx.arc(x + i * 6, y - 6 + (i % 2 === 0 ? -1 : 2), 1.6, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+function drawKeg(s){
+  const { x, y } = s;
+  ctx.fillStyle = COLORS.kegMetal;
+  ctx.fillRect(x - 18, y - 26, 36, 46);
+  ctx.beginPath();
+  ctx.ellipse(x, y - 26, 18, 6, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.strokeStyle = COLORS.wallLine;
+  ctx.lineWidth = 2;
+  ctx.strokeRect(x - 18, y - 26, 36, 46);
+
+  ctx.fillStyle = COLORS.kegBand;
+  ctx.fillRect(x - 18, y - 14, 36, 5);
+  ctx.fillRect(x - 18, y + 6, 36, 5);
+
+  // tap
+  ctx.fillStyle = COLORS.kegTap;
+  ctx.fillRect(x + 12, y - 6, 12, 6);
+  ctx.beginPath();
+  ctx.arc(x + 26, y - 3, 3, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function drawGymRack(s){
+  const { x, y } = s;
+  // A-frame rack
+  ctx.strokeStyle = COLORS.barbellBar;
+  ctx.lineWidth = 5;
+  ctx.beginPath();
+  ctx.moveTo(x - 26, y + 20);
+  ctx.lineTo(x - 8, y - 18);
+  ctx.moveTo(x + 26, y + 20);
+  ctx.lineTo(x + 8, y - 18);
+  ctx.stroke();
+
+  // barbell resting on the rack
+  ctx.strokeStyle = COLORS.barbellBar;
+  ctx.lineWidth = 4;
+  ctx.beginPath();
+  ctx.moveTo(x - 30, y - 16);
+  ctx.lineTo(x + 30, y - 16);
+  ctx.stroke();
+
+  ctx.fillStyle = COLORS.barbellPlate;
+  [-30, -24, 24, 30].forEach((dx, i) => {
+    const r = i === 0 || i === 3 ? 12 : 9;
+    ctx.beginPath();
+    ctx.arc(x + dx, y - 16, r, 0, Math.PI * 2);
+    ctx.fill();
+  });
+}
+
+function drawFightRing(s){
+  const { x, y } = s;
+  const r = 34;
+  ctx.fillStyle = COLORS.ringDirt;
+  ctx.globalAlpha = 0.6;
+  ctx.beginPath();
+  ctx.ellipse(x, y, r, r * 0.62, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.globalAlpha = 1;
+
+  const posts = 6;
+  ctx.fillStyle = COLORS.ringPostLocked;
+  ctx.strokeStyle = COLORS.wallLine;
+  ctx.lineWidth = 1.5;
+  const postPoints = [];
+  for (let i = 0; i < posts; i++){
+    const a = (i / posts) * Math.PI * 2;
+    const px = x + Math.cos(a) * r;
+    const py = y + Math.sin(a) * r * 0.62;
+    postPoints.push([px, py]);
+    ctx.beginPath();
+    ctx.arc(px, py, 3.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+  }
+  ctx.strokeStyle = "rgba(255,255,255,0.7)";
+  ctx.lineWidth = 2;
+  ctx.setLineDash([5, 4]);
+  ctx.beginPath();
+  postPoints.forEach(([px, py], i) => i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py));
+  ctx.closePath();
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  ctx.font = "18px sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText("🔒", x, y + 5);
+  ctx.textAlign = "left";
+}
+
+/* ---------------- player ---------------- */
 function drawPlayer(){
   const wobble = stats.beerLevel > 40 ? Math.sin(Date.now() / 90) * (stats.beerLevel / 100) * 4 : 0;
   const x = player.x + wobble;
   const y = player.y;
 
+  // legs — animate a walk cycle while moving, planted while idle
+  const legSwing = player.moving ? (Math.floor(tick / 6) % 2 === 0 ? 5 : -5) : 0;
+  ctx.strokeStyle = COLORS.chickenLeg;
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(x - 6, y + PLAYER_RADIUS * 0.7);
+  ctx.lineTo(x - 6 + legSwing * 0.3, y + PLAYER_RADIUS * 0.7 + 10);
+  ctx.moveTo(x + 6, y + PLAYER_RADIUS * 0.7);
+  ctx.lineTo(x + 6 - legSwing * 0.3, y + PLAYER_RADIUS * 0.7 + 10);
+  ctx.stroke();
+  ctx.fillStyle = COLORS.chickenBeak;
+  ctx.beginPath();
+  ctx.ellipse(x - 6 + legSwing * 0.3, y + PLAYER_RADIUS * 0.7 + 11, 4, 2.2, 0, 0, Math.PI * 2);
+  ctx.ellipse(x + 6 - legSwing * 0.3, y + PLAYER_RADIUS * 0.7 + 11, 4, 2.2, 0, 0, Math.PI * 2);
+  ctx.fill();
+
   // body
   ctx.fillStyle = COLORS.chickenBody;
   ctx.beginPath();
   ctx.ellipse(x, y, PLAYER_RADIUS, PLAYER_RADIUS * 0.95, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = "rgba(31,42,68,0.25)";
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+
+  // wing detail
+  ctx.fillStyle = "rgba(31,42,68,0.12)";
+  ctx.beginPath();
+  ctx.ellipse(x - 4, y + 2, 8, 11, -0.3, 0, Math.PI * 2);
   ctx.fill();
 
   // comb
@@ -383,6 +727,8 @@ function stopLoop(){
 /* ==================== init ==================== */
 function initGame(){
   canvas = document.getElementById("game-canvas");
+  canvas.width = CANVAS_W;
+  canvas.height = CANVAS_H;
   ctx = canvas.getContext("2d");
   stationBtn = document.getElementById("station-action-btn");
   chunderClockEl = document.getElementById("chunder-clock");
@@ -394,7 +740,7 @@ function initGame(){
   stationBtn.addEventListener("click", triggerStationAction);
 
   draw(); // paint the world once even before auth resolves
-  if (DEBUG) console.log("[ChickenFrat] game.js loaded — Phase 1 build");
+  if (DEBUG) console.log("[ChickenFrat] game.js loaded — Phase 1 build (map/cosmetics polish)");
 }
 
 document.addEventListener("DOMContentLoaded", initGame);
