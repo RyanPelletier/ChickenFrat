@@ -49,19 +49,19 @@ document.querySelectorAll(".auth-tab").forEach(tab => {
     tab.classList.add("active");
     showError("");
     if (tab.dataset.tab === "signin"){
-      signinForm.classList.remove("hidden");
-      signupForm.classList.add("hidden");
+      signinForm.hidden = false;
+      signupForm.hidden = true;
     }else{
-      signupForm.classList.remove("hidden");
-      signinForm.classList.add("hidden");
+      signupForm.hidden = false;
+      signinForm.hidden = true;
     }
   });
 });
 
 /* ---------------- config check ---------------- */
 if (!isFirebaseConfigured){
-  authForms.classList.add("hidden");
-  authConfigNotice.classList.remove("hidden");
+  authForms.hidden = true;
+  authConfigNotice.hidden = false;
 }
 
 /* ---------------- sign up ---------------- */
@@ -123,8 +123,8 @@ if (isFirebaseConfigured){
       startPlayerSession(user.uid);
 
       hudUsername.textContent = displayName;
-      hudSignoutBtn.classList.remove("hidden");
-      authOverlay.classList.add("hidden");
+      hudSignoutBtn.hidden = false;
+      authOverlay.hidden = true;
 
       window.dispatchEvent(new CustomEvent("cf:authready", {
         detail: { uid: user.uid, displayName, playerData }
@@ -132,8 +132,8 @@ if (isFirebaseConfigured){
     }else{
       stopPlayerSession();
       hudUsername.textContent = "";
-      hudSignoutBtn.classList.add("hidden");
-      authOverlay.classList.remove("hidden");
+      hudSignoutBtn.hidden = true;
+      authOverlay.hidden = false;
       window.dispatchEvent(new CustomEvent("cf:signout"));
     }
   });
