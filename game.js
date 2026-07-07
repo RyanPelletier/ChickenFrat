@@ -327,37 +327,37 @@ function syncHud(){
 
   // station action button
   if (nearestStation){
-    stationBtn.classList.remove("hidden");
+    stationBtn.hidden = false;
     stationBtn.textContent = stationButtonLabel(nearestStation);
     stationBtn.style.left = nearestStation.x + "px";
     stationBtn.style.top = nearestStation.y + "px";
     stationBtn.disabled = nearestStation.type === "locked";
   }else{
-    stationBtn.classList.add("hidden");
+    stationBtn.hidden = true;
   }
 
   // chunder clock
   if (chunderActive){
-    chunderClockEl.classList.remove("hidden");
+    chunderClockEl.hidden = false;
     chunderClockEl.style.left = (player.x - 37) + "px";
     chunderClockEl.style.top = (player.y - 100) + "px";
     const frac = chunderFramesLeft / CHUNDER_COUNTDOWN_FRAMES;
     chunderRingFg.style.strokeDashoffset = String(CHUNDER_RING_CIRCUMFERENCE * (1 - frac));
     chunderSecondsEl.textContent = Math.ceil(chunderFramesLeft / 60);
   }else{
-    chunderClockEl.classList.add("hidden");
+    chunderClockEl.hidden = true;
   }
 
   // party fowl banner
   const msLeft = partyFowlUntil - Date.now();
   if (msLeft > 0){
-    partyFowlBanner.classList.remove("hidden");
+    partyFowlBanner.hidden = false;
     const totalSec = Math.ceil(msLeft / 1000);
     const mm = Math.floor(totalSec / 60);
     const ss = String(totalSec % 60).padStart(2, "0");
     partyFowlTimerEl.textContent = `${mm}:${ss}`;
   }else{
-    partyFowlBanner.classList.add("hidden");
+    partyFowlBanner.hidden = true;
   }
 }
 
