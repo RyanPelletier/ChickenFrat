@@ -1,23 +1,42 @@
 /* =====================================================================
    MULTIPLAYER (Realtime Database)
-   Live position sync + proximity chat. Split from player-data.js (which
-   owns Firestore) deliberately: Realtime Database bills by bandwidth
-   rather than per-read/write, which is the right fit for something that
-   changes many times a second like position — Firestore would rack up
-   reads/writes fast at that frequency and cost far more for the same
-   data. Firestore stays the source of truth for slow-changing stuff
-   (Strength, Clout); this file owns only the fast, ephemeral stuff.
+   Live position sync + proximity chat + Cockfight Ring matchmaking. Split
+   from player-data.js (which owns Firestore) deliberately: Realtime
+   Database bills by bandwidth rather than per-read/write, which is the
+   right fit for stuff that changes many times a second like position —
+   Firestore would rack up reads/writes fast at that frequency and cost
+   far more for the same data. Firestore stays the source of truth for
+   slow-changing stuff (Strength, Clout, unlocked cosmetics); this file
+   owns only the fast, ephemeral stuff.
 
    Data shape at /presence/{uid}:
-     { displayName, x, y, updatedAt, chat: { text, sentAt } }
+     { displayName, x, y, updatedAt, chat: { text, sentAt }, cosmetic? }
+
+   COCKFIGHT MATCHMAKING (no backend/Cloud Functions, so this is a
+   best-effort, client-driven design — fine for a casual small-scale
+   game, not bulletproof under heavy concurrent load):
+     /cockfight/waiting  — at most one waiting fighter: {uid, displayName, strength, joinedAt}
+     /cockfight/results/{uid} — a one-shot result written FOR that uid by whoever beat them to the punch
+
+   The first player to click "Fight" becomes the waiting entry (claimed
+   atomically via a transaction, so two simultaneous clicks can't both
+   think they're waiting). The next player to click resolves the match
+   immediately client-side, writes the result to the waiting player's
+   results slot, and clears the waiting slot. The waiting player is
+   listening on their own results slot the whole time.
+
+   Because this is peer-to-peer with no server referee, the RTDB rules
+   for /cockfight are intentionally more permissive than /presence (any
+   signed-in player can write anyone's result) — that's a real trust
+   tradeoff for a casual hobby project; see FIREBASE_SETUP.md.
 
    game.js doesn't touch Firebase directly — it calls the functions
-   below and reads getOtherPlayers() each frame.
+   below and reads getOtherPlayers() / getCockfightState() each frame.
    ===================================================================== */
 
 import { rtdb, isRealtimeDbConfigured } from "./firebase-init.js";
 import {
-  ref, set, update, remove, onValue, onDisconnect, serverTimestamp
+  ref, set, update, remove, get, onValue, onDisconnect, runTransaction, serverTimestamp
 } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-database.js";
 
 const PRESENCE_WRITE_INTERVAL_MS = 150; // throttle position writes to keep bandwidth cheap
@@ -28,6 +47,11 @@ let currentDisplayName = "";
 let presenceUnsubscribe = null;
 let lastPresenceWriteAt = 0;
 let otherPlayersCache = {};
+let lastSentCosmeticKey = null;
+
+let cockfightState = "idle"; // "idle" | "waiting"
+let cockfightResultUnsub = null;
+let pendingCockfightResult = null;
 
 export function isMultiplayerAvailable(){
   return isRealtimeDbConfigured;
@@ -38,6 +62,9 @@ export function initMultiplayer(uid, displayName){
   currentUid = uid;
   currentDisplayName = displayName;
   otherPlayersCache = {};
+  lastSentCosmeticKey = null;
+  cockfightState = "idle";
+  pendingCockfightResult = null;
 
   const myPresenceRef = ref(rtdb, `presence/${uid}`);
 
@@ -59,6 +86,7 @@ export function initMultiplayer(uid, displayName){
 
 export function stopMultiplayer(){
   if (presenceUnsubscribe){ presenceUnsubscribe(); presenceUnsubscribe = null; }
+  leaveCockfight();
   if (currentUid && isRealtimeDbConfigured){
     remove(ref(rtdb, `presence/${currentUid}`)).catch(() => {});
   }
@@ -66,18 +94,25 @@ export function stopMultiplayer(){
   otherPlayersCache = {};
 }
 
-/** Called every frame from game.js — internally throttled, cheap to call often. */
-export function updateLocalPresence(x, y){
+/** Called every frame from game.js — internally throttled, cheap to call often. cosmetic is {kind,color}|null. */
+export function updateLocalPresence(x, y, cosmetic){
   if (!currentUid || !isRealtimeDbConfigured) return;
   const now = Date.now();
   if (now - lastPresenceWriteAt < PRESENCE_WRITE_INTERVAL_MS) return;
   lastPresenceWriteAt = now;
-  update(ref(rtdb, `presence/${currentUid}`), {
+  const cosmeticKey = cosmetic ? cosmetic.kind + cosmetic.color : null;
+  const patch = {
     displayName: currentDisplayName,
     x: Math.round(x),
     y: Math.round(y),
     updatedAt: serverTimestamp()
-  }).catch((err) => console.error("[ChickenFrat] presence update failed:", err));
+  };
+  if (cosmeticKey !== lastSentCosmeticKey){
+    patch.cosmetic = cosmetic || null;
+    lastSentCosmeticKey = cosmeticKey;
+  }
+  update(ref(rtdb, `presence/${currentUid}`), patch)
+    .catch((err) => console.error("[ChickenFrat] presence update failed:", err));
 }
 
 export function sendChatMessage(text){
@@ -87,7 +122,7 @@ export function sendChatMessage(text){
   }).catch((err) => console.error("[ChickenFrat] chat send failed:", err));
 }
 
-/** Returns a map of { uid: {displayName, x, y, chat?} } for everyone but you, excluding stale/ghost entries. */
+/** Returns a map of { uid: {displayName, x, y, chat?, cosmetic?} } for everyone but you, excluding stale/ghost entries. */
 export function getOtherPlayers(){
   const now = Date.now();
   const alive = {};
@@ -96,4 +131,81 @@ export function getOtherPlayers(){
     if (now - updatedAtMs < STALE_PRESENCE_MS) alive[otherUid] = data;
   }
   return alive;
+}
+
+/* ==================== cockfight matchmaking ==================== */
+
+export function getCockfightState(){
+  return cockfightState;
+}
+
+/** Call once per frame (cheap) — returns the most recent fight result and clears it, or null. */
+export function consumeCockfightResult(){
+  const r = pendingCockfightResult;
+  pendingCockfightResult = null;
+  return r;
+}
+
+function resolveFightOutcome(myStrength, opponentStrength){
+  const total = Math.max(1, myStrength + opponentStrength);
+  const winChance = Math.min(0.9, Math.max(0.1, myStrength / total)); // never a sure thing either way — stays "casual"
+  return Math.random() < winChance;
+}
+
+export async function joinCockfight(strength){
+  if (!isRealtimeDbConfigured || !currentUid || cockfightState === "waiting") return;
+
+  const waitingRef = ref(rtdb, "cockfight/waiting");
+  const myEntry = { uid: currentUid, displayName: currentDisplayName, strength, joinedAt: Date.now() };
+
+  try{
+    const txResult = await runTransaction(waitingRef, (current) => {
+      if (current === null || current.uid === currentUid) return myEntry;
+      return; // someone else is already waiting — abort, we'll challenge them below instead
+    });
+
+    const iAmNowWaiting = txResult.committed && txResult.snapshot.val() && txResult.snapshot.val().uid === currentUid;
+
+    if (iAmNowWaiting){
+      cockfightState = "waiting";
+      const resultRef = ref(rtdb, `cockfight/results/${currentUid}`);
+      cockfightResultUnsub = onValue(resultRef, (snap) => {
+        const val = snap.val();
+        if (val){
+          pendingCockfightResult = val;
+          cockfightState = "idle";
+          remove(resultRef).catch(() => {});
+          if (cockfightResultUnsub){ cockfightResultUnsub(); cockfightResultUnsub = null; }
+        }
+      });
+      return;
+    }
+
+    // someone else was already waiting — read them and resolve the fight right now
+    const snap = await get(waitingRef);
+    const opponent = snap.val();
+    if (!opponent || opponent.uid === currentUid) return; // race: they left first, just bail quietly
+
+    const iWon = resolveFightOutcome(strength, opponent.strength);
+    await update(ref(rtdb), {
+      [`cockfight/results/${opponent.uid}`]: { won: !iWon, opponentName: currentDisplayName, myStrength: opponent.strength, opponentStrength: strength },
+      "cockfight/waiting": null
+    });
+    pendingCockfightResult = { won: iWon, opponentName: opponent.displayName, myStrength: strength, opponentStrength: opponent.strength };
+  }catch(err){
+    console.error("[ChickenFrat] cockfight matchmaking failed:", err);
+  }
+}
+
+export async function leaveCockfight(){
+  if (cockfightResultUnsub){ cockfightResultUnsub(); cockfightResultUnsub = null; }
+  const wasWaiting = cockfightState === "waiting";
+  cockfightState = "idle";
+  if (!wasWaiting || !currentUid || !isRealtimeDbConfigured) return;
+  try{
+    await runTransaction(ref(rtdb, "cockfight/waiting"), (current) => {
+      if (current && current.uid === currentUid) return null;
+      return; // not ours anymore (already matched) — leave it alone
+    });
+  }catch(err){ console.error("[ChickenFrat] leaveCockfight cleanup failed:", err); }
 }
