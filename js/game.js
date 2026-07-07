@@ -1,28 +1,33 @@
 /* =====================================================================
    CHICKEN FRAT — game.js
-   Map v2: House (more house-shaped, with a chimney + windows) sits in a
-   middle column with Backyard above it and Front Lawn below; Gym is a
-   full-height column on the right; a Forest full of wandering wolves
-   fills the left column, with a Jail cage inset into it; the Street
-   still runs along the bottom. Ten cosmetic chicks still wander/roam
-   and can be picked up and carried to the house for Clout.
+   Map v3: House (more house-shaped, with a chimney + windows) sits in a
+   middle column with Backyard above it and Front Lawn below. The right
+   column now stacks Forest (top) / Gym (mid, smaller) / Pool (bottom) —
+   mirroring the middle column's proportions. A second Forest fills the
+   whole left column, with a Jail cage inset into it. The Street still
+   runs along the bottom. Ten cosmetic chicks still wander/roam and can
+   be picked up and carried to the house for Clout.
+
+   POOL: wading through it is slow (heavy speed penalty), and there's a
+   "pee in the pool" button that's an instant, no-questions-asked Party
+   Fowl if clicked — pure self-inflicted chaos button, no other checks.
 
    TWO WAYS TO END UP IN TROUBLE:
-   1. The original Party Fowl rules (Chunder Clock timeout, or bringing
-      the same chick to the house twice within 5 minutes) — 5 minute
-      beer lockout.
-   2. NEW: rack up 3 Party Fowls within a rolling 5-minute window and
-      you get hauled off to Jail for 60 seconds — movement is frozen
-      there, carried chicks are released back to the wild.
+   1. The original Party Fowl rules (Chunder Clock timeout, bringing the
+      same chick to the house twice within 5 minutes, or peeing in the
+      pool) — 5 minute beer lockout each time.
+   2. Rack up 3 Party Fowls within a rolling 5-minute window and you get
+      hauled off to Jail for 60 seconds — movement is frozen there,
+      carried chicks are released back to the wild.
 
-   WOLVES: wandering the Forest. Walk into one and it resolves instantly
-   based on your total Strength (base + beer boost) vs. the wolf's own
-   strength: win and you gain Clout, lose and you take a Strength hit,
-   lose badly (wildly outmatched) and your Strength is wiped to zero.
+   WOLVES: wandering both Forest patches. Walk into one and it resolves
+   instantly based on your total Strength (base + beer boost) vs. the
+   wolf's own strength: win and you gain Clout, lose and you take a
+   Strength hit, lose badly (wildly outmatched) and your Strength is
+   wiped to zero.
 
    Not in this build yet (see project README): the functioning Cockfight
-   Ring, unlockable player cosmetics, proximity chat, the slur filter,
-   Sloppy Mac, and multiplayer position sync over Realtime Database.
+   Ring, unlockable player cosmetics, the slur filter, and Sloppy Mac.
 
    This file knows nothing about Firebase directly — it only listens for
    `cf:authready` / `cf:signout` events from auth.js, and calls
@@ -83,7 +88,6 @@ const JAIL_WINDOW_MS = 5 * 60 * 1000; // ...within this window...
 const JAIL_LOCKOUT_MS = 60 * 1000;    // ...gets you this long in jail
 
 // wolves
-const WOLF_COUNT = 5;
 const WOLF_MIN_STRENGTH = 35;
 const WOLF_MAX_STRENGTH = 90;
 const WOLF_CONTACT_RADIUS = 24;
@@ -96,6 +100,9 @@ const WOLF_WANDER_MAX_FRAMES = 260;
 
 const CHAT_BUBBLE_LIFESPAN_MS = 6000;
 const MAX_CHAT_VISIBLE_DISTANCE = 260; // beyond this, another player's speech bubble is fully faded
+
+// pool
+const POOL_SPEED_MULTIPLIER = 0.35; // wading through water is slow
 
 const DEBUG = true;
 /* ==================== end config ==================== */
@@ -140,24 +147,30 @@ const COLORS = {
   wolfDark: "#4A4A52",
   wolfEye: "#E8433D",
   remoteChicken: "#F2994A",
-  chatBubbleBg: "#FFFFFF"
+  chatBubbleBg: "#FFFFFF",
+  pool: "#6EC6E8",
+  poolDeep: "#3F8FD1",
+  poolWave: "#BFEFFF"
 };
 
 /* ---------------- grid layout ----------------
-   Left column:  Forest (with Jail inset)
+   Left column:   Forest (with Jail inset)
    Middle column: Backyard (top) / House (mid) / Front Lawn (bottom)
-   Right column: Gym (full height)
+   Right column:  Forest patch (top) / Gym (mid, smaller now) / Pool (bottom)
    ------------------------------------------------------------------ */
-const FOREST_RECT = { x: 20, y: 20, w: 280, h: 570 };
-const JAIL_RECT    = { x: 70, y: 240, w: 180, h: 130 };
+const FOREST_RECT_LEFT  = { x: 20,  y: 20, w: 280, h: 570 };
+const FOREST_RECT_RIGHT = { x: 660, y: 20, w: 280, h: 170 };
+const JAIL_RECT = { x: 70, y: 240, w: 180, h: 130 }; // inset into the left forest only
 
 const zones = [
   { key: "backyard", label: "Backyard",            x: 320, y: 20,  w: 320, h: 170, color: COLORS.backyard },
   { key: "house",    label: "Frat House Interior",  x: 320, y: 210, w: 320, h: 190, color: COLORS.house, roof: COLORS.roof, house: true },
   { key: "lawn",     label: "Front Lawn",           x: 320, y: 420, w: 320, h: 170, color: COLORS.lawn },
-  { key: "gym",      label: "Gym",                  x: 660, y: 20,  w: 280, h: 570, color: COLORS.gym, roof: COLORS.roofGym, sign: "GYM" }
+  { key: "gym",      label: "Gym",                  x: 660, y: 210, w: 280, h: 190, color: COLORS.gym, roof: COLORS.roofGym, sign: "GYM" },
+  { key: "pool",     label: "Pool",                 x: 660, y: 420, w: 280, h: 170, color: COLORS.pool, water: true }
 ];
 const HOUSE_ZONE = zones.find(z => z.key === "house");
+const POOL_ZONE = zones.find(z => z.key === "pool");
 
 /* ---------------- stations ---------------- */
 const stations = [
@@ -165,7 +178,8 @@ const stations = [
   { id: "beer", type: "beer", x: 560, y: 270, label: "Drink Beer" },
   { id: "bathroom", type: "bathroom", x: 590, y: 370, emoji: "🚽", label: "Bathroom Stall" },
   { id: "gym", type: "gym", x: 800, y: 300, label: "Work Out" },
-  { id: "cockfight", type: "locked", x: 480, y: 100, label: "Cockfight Ring — coming soon" }
+  { id: "cockfight", type: "locked", x: 480, y: 100, label: "Cockfight Ring — coming soon" },
+  { id: "pool-pee", type: "pool-pee", x: 800, y: 505, emoji: "💦", label: "Pee in the pool 😈 (instant Party Fowl)" }
 ];
 
 /* ---------------- decorative front-lawn chairs ---------------- */
@@ -182,10 +196,10 @@ function pointInRect(p, r){
 function randomPointInRect(r){
   return { x: r.x + Math.random() * r.w, y: r.y + Math.random() * r.h };
 }
-function randomForestPoint(){
+function randomForestPoint(rect){
   let p, tries = 0;
   do{
-    p = { x: FOREST_RECT.x + 20 + Math.random() * (FOREST_RECT.w - 40), y: FOREST_RECT.y + 20 + Math.random() * (FOREST_RECT.h - 40) };
+    p = { x: rect.x + 20 + Math.random() * (rect.w - 40), y: rect.y + 20 + Math.random() * (rect.h - 40) };
     tries++;
   } while (pointInRect(p, JAIL_RECT) && tries < 20);
   return p;
@@ -224,23 +238,31 @@ const chicks = CHICK_DEFS.map((def, i) => {
 
 /* ---------------- forest trees (static decoration) ---------------- */
 const forestTrees = [];
-for (let i = 0; i < 14; i++){
-  let p, tries = 0;
-  do{ p = { x: FOREST_RECT.x + 15 + Math.random() * (FOREST_RECT.w - 30), y: FOREST_RECT.y + 15 + Math.random() * (FOREST_RECT.h - 30) }; tries++; }
-  while (pointInRect(p, JAIL_RECT) && tries < 20);
-  forestTrees.push({ x: p.x, y: p.y, size: 10 + Math.random() * 8 });
+function seedTrees(rect, count){
+  for (let i = 0; i < count; i++){
+    let p, tries = 0;
+    do{ p = { x: rect.x + 15 + Math.random() * (rect.w - 30), y: rect.y + 15 + Math.random() * (rect.h - 30) }; tries++; }
+    while (pointInRect(p, JAIL_RECT) && tries < 20);
+    forestTrees.push({ x: p.x, y: p.y, size: 10 + Math.random() * 8 });
+  }
 }
+seedTrees(FOREST_RECT_LEFT, 14);
+seedTrees(FOREST_RECT_RIGHT, 6);
 
-/* ---------------- wolves ---------------- */
+/* ---------------- wolves (roam both forest patches) ---------------- */
 const wolves = [];
-for (let i = 0; i < WOLF_COUNT; i++){
-  const p = randomForestPoint();
-  wolves.push({
-    id: i, x: p.x, y: p.y, vx: 0, vy: 0, wanderFramesLeft: 0, facing: 1,
-    strength: Math.floor(WOLF_MIN_STRENGTH + Math.random() * (WOLF_MAX_STRENGTH - WOLF_MIN_STRENGTH)),
-    cooldownFrames: 0
-  });
+function seedWolves(rect, count, startId){
+  for (let i = 0; i < count; i++){
+    const p = randomForestPoint(rect);
+    wolves.push({
+      id: startId + i, roamRect: rect, x: p.x, y: p.y, vx: 0, vy: 0, wanderFramesLeft: 0, facing: 1,
+      strength: Math.floor(WOLF_MIN_STRENGTH + Math.random() * (WOLF_MAX_STRENGTH - WOLF_MIN_STRENGTH)),
+      cooldownFrames: 0
+    });
+  }
 }
+seedWolves(FOREST_RECT_LEFT, 5, 0);
+seedWolves(FOREST_RECT_RIGHT, 3, 5);
 
 /* ---------------- state ---------------- */
 let canvas, ctx;
@@ -354,7 +376,7 @@ function updateMovement(){
   player.moving = moving;
   if (dx !== 0 && dy !== 0){ dx *= 0.7071; dy *= 0.7071; }
 
-  const speed = BASE_SPEED * currentSpeedMultiplier();
+  const speed = BASE_SPEED * currentSpeedMultiplier() * (playerInPool() ? POOL_SPEED_MULTIPLIER : 1);
   let moveX = dx * speed;
   let moveY = dy * speed;
 
@@ -368,6 +390,10 @@ function updateMovement(){
 
   player.x = Math.min(CANVAS_W - PLAYER_RADIUS, Math.max(PLAYER_RADIUS, player.x + moveX));
   player.y = Math.min(PROPERTY_H - PLAYER_RADIUS, Math.max(PLAYER_RADIUS, player.y + moveY));
+}
+
+function playerInPool(){
+  return pointInRect(player, POOL_ZONE);
 }
 
 /* ==================== interaction targeting (stations + loose chicks) ==================== */
@@ -398,6 +424,7 @@ function interactableLabel(hit){
   if (s.type === "gym") return stats.protein > 0 ? "Tap to lift" : "Nothing to lift — eat seed first";
   if (s.type === "beer") return partyFowlUntil > Date.now() ? "Locked — you're in the doghouse" : "Tap to chug";
   if (s.type === "bathroom") return chunderActive ? "You made it — hurl in peace" : "Bathroom stall";
+  if (s.type === "pool-pee") return s.label;
   return s.label;
 }
 function interactableDisabled(hit){
@@ -434,6 +461,10 @@ function triggerInteraction(){
     stats.beerLevel = Math.min(BEER_MAX, stats.beerLevel + DRINK_GAIN);
     stats.strengthBoost = Math.min(STRENGTH_BOOST_CAP, stats.strengthBoost + STRENGTH_BOOST_PER_DRINK);
     if (stats.beerLevel >= BEER_MAX) startChunderClock();
+  }else if (s.type === "pool-pee"){
+    triggerPartyFowl("pool-pee");
+    showToast("PARTY FOWL! You peed in the pool", COLORS.fowlRed);
+    if (DEBUG) console.log("[ChickenFrat] instant Party Fowl — peed in the pool");
   }
 }
 
@@ -570,8 +601,9 @@ function updateWolves(){
       w.wanderFramesLeft = WOLF_WANDER_MIN_FRAMES + Math.random() * (WOLF_WANDER_MAX_FRAMES - WOLF_WANDER_MIN_FRAMES);
     }
     const nx = w.x + w.vx, ny = w.y + w.vy;
-    const blockedX = nx < FOREST_RECT.x + 16 || nx > FOREST_RECT.x + FOREST_RECT.w - 16 || pointInRect({ x: nx, y: w.y }, JAIL_RECT);
-    const blockedY = ny < FOREST_RECT.y + 16 || ny > FOREST_RECT.y + FOREST_RECT.h - 16 || pointInRect({ x: w.x, y: ny }, JAIL_RECT);
+    const r = w.roamRect;
+    const blockedX = nx < r.x + 16 || nx > r.x + r.w - 16 || pointInRect({ x: nx, y: w.y }, JAIL_RECT);
+    const blockedY = ny < r.y + 16 || ny > r.y + r.h - 16 || pointInRect({ x: w.x, y: ny }, JAIL_RECT);
     if (blockedX) w.vx *= -1; else w.x = nx;
     if (blockedY) w.vy *= -1; else w.y = ny;
     if (Math.abs(w.vx) > 0.05) w.facing = w.vx > 0 ? 1 : -1;
@@ -597,7 +629,7 @@ function resolveWolfEncounter(w){
     showToast(`-${WOLF_STRENGTH_LOSS} Strength! That wolf got you`, COLORS.fowlRed);
     if (DEBUG) console.log("[ChickenFrat] lost to wolf (str " + w.strength + ") — strength now", stats.baseStrength);
   }
-  const p = randomForestPoint();
+  const p = randomForestPoint(w.roamRect);
   w.x = p.x; w.y = p.y;
   w.cooldownFrames = WOLF_ENCOUNTER_COOLDOWN_FRAMES;
 }
@@ -641,6 +673,7 @@ function draw(){
   zones.forEach(z => ctx.strokeRect(z.x, z.y, z.w, z.h));
 
   zones.forEach(z => { if (z.roof) drawBuildingTopper(z); });
+  zones.forEach(z => { if (z.water) drawPoolTexture(z); });
 
   ctx.font = "700 13px 'Baloo 2', sans-serif";
   ctx.fillStyle = COLORS.wallLine;
@@ -756,13 +789,15 @@ function drawLocalChatBubble(){
 
 /* ---------------- forest + jail + wolves ---------------- */
 function drawForest(){
-  ctx.fillStyle = COLORS.forest;
-  ctx.fillRect(FOREST_RECT.x, FOREST_RECT.y, FOREST_RECT.w, FOREST_RECT.h);
-  ctx.font = "700 13px 'Baloo 2', sans-serif";
-  ctx.fillStyle = "#FFFFFF";
-  ctx.globalAlpha = 0.65;
-  ctx.fillText("Forest", FOREST_RECT.x + 10, FOREST_RECT.y + 20);
-  ctx.globalAlpha = 1;
+  [FOREST_RECT_LEFT, FOREST_RECT_RIGHT].forEach(rect => {
+    ctx.fillStyle = COLORS.forest;
+    ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
+    ctx.font = "700 13px 'Baloo 2', sans-serif";
+    ctx.fillStyle = "#FFFFFF";
+    ctx.globalAlpha = 0.65;
+    ctx.fillText("Forest", rect.x + 10, rect.y + 20);
+    ctx.globalAlpha = 1;
+  });
 
   forestTrees.forEach(drawTree);
   drawJail();
@@ -918,6 +953,27 @@ function drawBuildingTopper(z){
 
   ctx.fillStyle = COLORS.door;
   ctx.fillRect(z.x + z.w / 2 - 16, z.y + z.h - 4, 32, 4);
+}
+
+function drawPoolTexture(z){
+  // deeper-water patch
+  ctx.fillStyle = COLORS.poolDeep;
+  ctx.globalAlpha = 0.35;
+  ctx.fillRect(z.x + 20, z.y + 20, z.w - 40, z.h - 40);
+  ctx.globalAlpha = 1;
+
+  // wavy ripple lines
+  ctx.strokeStyle = COLORS.poolWave;
+  ctx.lineWidth = 2;
+  const rowSpacing = 26;
+  for (let y = z.y + 22; y < z.y + z.h - 10; y += rowSpacing){
+    ctx.beginPath();
+    for (let x = z.x + 12; x < z.x + z.w - 12; x += 4){
+      const yy = y + Math.sin((x + tick * 0.6) / 14) * 3;
+      if (x === z.x + 12) ctx.moveTo(x, yy); else ctx.lineTo(x, yy);
+    }
+    ctx.stroke();
+  }
 }
 
 /* ---------------- decorative lawn chairs ---------------- */
