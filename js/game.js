@@ -301,6 +301,7 @@ let canvas, ctx;
 let stationBtn, chunderClockEl, chunderRingFg, chunderSecondsEl;
 let partyFowlBanner, partyFowlTimerEl, jailBanner, jailTimerEl;
 let toiletPeeBtn, toiletPoopBtn;
+let poolPeeBtn;
 
 let uid = null;
 let displayName = "";
@@ -525,6 +526,13 @@ function doPoop(){
   triggerPartyFowl("poop");
   showToast("PARTY FOWL! ...and now the toilet's broken", COLORS.fowlRed);
   if (DEBUG) console.log("[ChickenFrat] pooped — instant Party Fowl, toilet out of order for 60s");
+}
+function doPoolPee(){
+  if (!running || isJailed() || chatOpen) return;
+  if (!playerInPool()) return;
+  triggerPartyFowl("pool-pee");
+  showToast("PARTY FOWL! You peed in the pool", COLORS.fowlRed);
+  if (DEBUG) console.log("[ChickenFrat] peed in the pool — instant Party Fowl (surprise!)");
 }
 
 /* ==================== chick delivery ==================== */
@@ -1430,11 +1438,11 @@ function syncHud(){
     }else{
       stationBtn.hidden = true;
       toiletPeeBtn.hidden = false;
-      toiletPeeBtn.style.left = (s.x - 48) + "px";
+      toiletPeeBtn.style.left = s.x + "px";
       toiletPeeBtn.style.top = s.y + "px";
       toiletPoopBtn.hidden = false;
-      toiletPoopBtn.style.left = (s.x + 48) + "px";
-      toiletPoopBtn.style.top = s.y + "px";
+      toiletPoopBtn.style.left = s.x + "px";
+      toiletPoopBtn.style.top = (s.y - 46) + "px";
     }
   }else if (nearestInteractable && !isJailed()){
     stationBtn.hidden = false;
@@ -1449,6 +1457,14 @@ function syncHud(){
     stationBtn.hidden = true;
     toiletPeeBtn.hidden = true;
     toiletPoopBtn.hidden = true;
+  }
+
+  if (playerInPool() && !isJailed() && !chatOpen){
+    poolPeeBtn.hidden = false;
+    poolPeeBtn.style.left = player.x + "px";
+    poolPeeBtn.style.top = (player.y - 30) + "px";
+  }else{
+    poolPeeBtn.hidden = true;
   }
 
   if (chunderActive){
@@ -1510,10 +1526,12 @@ function initGame(){
   chatInputEl = document.getElementById("chat-input");
   toiletPeeBtn = document.getElementById("toilet-pee-btn");
   toiletPoopBtn = document.getElementById("toilet-poop-btn");
+  poolPeeBtn = document.getElementById("pool-pee-btn");
 
   stationBtn.addEventListener("click", triggerInteraction);
   toiletPeeBtn.addEventListener("click", doPee);
   toiletPoopBtn.addEventListener("click", doPoop);
+  poolPeeBtn.addEventListener("click", doPoolPee);
 
   chatInputEl.addEventListener("keydown", (e) => {
     e.stopPropagation();
