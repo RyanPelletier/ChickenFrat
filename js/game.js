@@ -41,12 +41,21 @@ import {
   initMultiplayer, stopMultiplayer, updateLocalPresence, sendChatMessage, getOtherPlayers, isMultiplayerAvailable,
   getCockfightState, joinCockfight, leaveCockfight, consumeCockfightResult
 } from "./multiplayer.js";
+import {
+  startFratHouses, stopFratHouses, getFratHouses, buyHouseKey, setHouseLocked, dropHouseKey
+} from "./frat-houses.js";
 
 /* ==================== CONFIG — tweak freely ==================== */
 const CANVAS_W = 960;
 const PROPERTY_H = 600;   // forest/backyard/house/lawn/gym area
-const STREET_H = 80;      // strip below the property
+const HOUSE_ROW_H = 70;   // frat house facades, right at the edge of the property
+const SIDEWALK_H = 14;
+const ROAD_H = 86;        // lane line, wandering chicks, the car
+const STREET_H = HOUSE_ROW_H + SIDEWALK_H + ROAD_H;
 const CANVAS_H = PROPERTY_H + STREET_H;
+const HOUSE_ROW_Y = PROPERTY_H;
+const SIDEWALK_Y = PROPERTY_H + HOUSE_ROW_H;
+const ROAD_Y = SIDEWALK_Y + SIDEWALK_H;
 
 const PLAYER_RADIUS = 16;
 const BASE_SPEED = 3.2;
@@ -91,6 +100,12 @@ const TOAST_LIFESPAN_FRAMES = 75;
 const JAIL_FOWL_THRESHOLD = 3;      // this many Party Fowls...
 const JAIL_WINDOW_MS = 5 * 60 * 1000; // ...within this window...
 const JAIL_LOCKOUT_MS = 60 * 1000;    // ...gets you this long in jail
+const JAIL_CLOUT_PENALTY = 100;       // lost every single time you're jailed, however you got there
+
+// car
+const CAR_SPEED_MULTIPLIER = 1.9;
+const CAR_INTERACT_RADIUS = 42;
+const DUI_BEER_THRESHOLD = 30; // beer level at/above this and getting behind the wheel = straight to jail
 
 // wolves
 const WOLF_MIN_STRENGTH = 35;
@@ -164,7 +179,17 @@ const COLORS = {
   chatBubbleBg: "#FFFFFF",
   pool: "#6EC6E8",
   poolDeep: "#3F8FD1",
-  poolWave: "#BFEFFF"
+  poolWave: "#BFEFFF",
+  houseRowBg: "#E4DCC4",
+  fratHouseWall: "#F4E9D8",
+  fratHouseWallLocked: "#D8CFC0",
+  fratHouseRoof: "#7A5A9E",
+  carBody: "#3F8FD1",
+  carBodyDark: "#2C6FA8",
+  carWindow: "#BFEFFF",
+  carWheel: "#1F2A44",
+  gold: "#E0B84B",
+  keyGold: "#F6C945"
 };
 
 /* ---------------- grid layout ----------------
@@ -196,23 +221,45 @@ const stations = [
 ];
 const COCKFIGHT_STATION = stations.find(s => s.id === "cockfight");
 
-/* ---------------- player cosmetics, won from the Cockfight Ring ---------------- */
-const PLAYER_COSMETIC_POOL = [
-  { kind: "bow",       color: "#FF8FB1" },
-  { kind: "bow",       color: "#3F8FD1" },
-  { kind: "bow",       color: "#6BBF4A" },
-  { kind: "cap",       color: "#E8433D" },
-  { kind: "shades",    color: "#1F2A44" },
-  { kind: "toga",      color: "#FFFFFF" },
-  { kind: "tophat",    color: "#1F2A44" },
-  { kind: "propeller", color: "#F6C945" }
+/* ---------------- merch: closet purchases + Cockfight Ring rewards share this catalog ----------------
+   Each item occupies one of four slots (head/face/neck/feet); equipping
+   a new item in a slot replaces whatever was there. Rendering reuses
+   drawChickCosmetic (originally built for the wandering chicks' bows/
+   hats) since the shape vocabulary already covers most of this — see
+   the "chain" and "shoes" cases added there for the two new slots. */
+const MERCH_CATALOG = [
+  { id: "bow_pink",    slot: "head", kind: "bow",       color: "#FF8FB1", label: "Pink Bow",      cost: 50 },
+  { id: "bow_blue",    slot: "head", kind: "bow",       color: "#3F8FD1", label: "Blue Bow",      cost: 50 },
+  { id: "cap_red",     slot: "head", kind: "cap",       color: "#E8433D", label: "Backwards Cap", cost: 70 },
+  { id: "tophat_blk",  slot: "head", kind: "tophat",    color: "#1F2A44", label: "Top Hat",       cost: 90 },
+  { id: "propeller",   slot: "head", kind: "propeller", color: "#F6C945", label: "Propeller Cap", cost: 90 },
+  { id: "shades_blk",  slot: "face", kind: "shades",    color: "#1F2A44", label: "Cool Shades",   cost: 60 },
+  { id: "shades_pink", slot: "face", kind: "shades",    color: "#FF8FB1", label: "Pink Shades",   cost: 60 },
+  { id: "chain_gold",  slot: "neck", kind: "chain",     color: "#E0B84B", label: "Gold Chain",    cost: 120 },
+  { id: "shoes_red",   slot: "feet", kind: "shoes",     color: "#E8433D", label: "Red Kicks",     cost: 80 },
+  { id: "shoes_white", slot: "feet", kind: "shoes",     color: "#FFFFFF", label: "White Kicks",   cost: 80 }
 ];
-function pickRandomCosmetic(owned){
-  const ownedKeys = new Set((owned || []).map(c => c.kind + c.color));
-  const unowned = PLAYER_COSMETIC_POOL.filter(c => !ownedKeys.has(c.kind + c.color));
-  const pool = unowned.length ? unowned : PLAYER_COSMETIC_POOL;
+function merchById(id){ return MERCH_CATALOG.find(m => m.id === id); }
+function pickRandomUnownedMerch(owned){
+  const ownedSet = new Set(owned || []);
+  const unowned = MERCH_CATALOG.filter(m => !ownedSet.has(m.id));
+  const pool = unowned.length ? unowned : MERCH_CATALOG;
   return pool[Math.floor(Math.random() * pool.length)];
 }
+
+/* ---------------- frat house row + car ---------------- */
+const fratHouses = [
+  { id: "house1", x: 140, y: HOUSE_ROW_Y + HOUSE_ROW_H / 2 },
+  { id: "house2", x: 380, y: HOUSE_ROW_Y + HOUSE_ROW_H / 2 },
+  { id: "house3", x: 620, y: HOUSE_ROW_Y + HOUSE_ROW_H / 2 },
+  { id: "house4", x: 860, y: HOUSE_ROW_Y + HOUSE_ROW_H / 2 }
+];
+const KEY_COST = 150;
+const KEY_DROP_BEER_THRESHOLD = 90;
+const SHRINE_COST = 100;
+const SHRINE_SUCCESS_CHANCE = 0.05;
+
+const car = { x: 500, y: ROAD_Y + ROAD_H - 22 };
 
 /* ---------------- decorative front-lawn chairs ---------------- */
 const lawnChairs = [
@@ -241,7 +288,7 @@ function randomForestPoint(rect){
 const ROAM_ZONES = {
   backyard: { x: 335, y: 35,  w: 290, h: 140 },
   lawn:     { x: 335, y: 435, w: 290, h: 140 },
-  street:   { x: 40,  y: 610, w: 880, h: 50 }
+  street:   { x: 40,  y: ROAD_Y + 10, w: 880, h: ROAD_H - 24 }
 };
 
 const CHICK_DEFS = [
@@ -302,6 +349,8 @@ let stationBtn, chunderClockEl, chunderRingFg, chunderSecondsEl;
 let partyFowlBanner, partyFowlTimerEl, jailBanner, jailTimerEl;
 let toiletPeeBtn, toiletPoopBtn;
 let poolPeeBtn;
+let houseModalEl, houseModalTitleEl, houseModalBodyEl;
+let closetModalEl, closetGridEl;
 
 let uid = null;
 let displayName = "";
@@ -317,8 +366,19 @@ let localChatBubble = null; // { text, sentAt }
 let player = { x: 400, y: 240, moving: false, carrying: [] };
 const keys = new Set();
 
-let stats = { protein: 0, baseStrength: 0, strengthBoost: 0, beerLevel: 0, clout: 0, cosmetics: [] };
-let equippedCosmetic = null; // {kind,color} — auto-equips the most recently won cosmetic
+let stats = {
+  protein: 0, baseStrength: 0, strengthBoost: 0, beerLevel: 0, clout: 0,
+  cosmetics: [], merch: [], equipped: { head: null, face: null, neck: null, feet: null },
+  trophies: { wolf: 0, cockfight: 0 }, sizeBoosted: false
+};
+let sizeMultiplier = 1;
+
+let driving = false;
+let hasDroppedKeyThisBinge = false;
+
+let houseModalOpen = false;
+let activeHouseId = null;
+let closetModalOpen = false;
 
 let chunderActive = false;
 let chunderFramesLeft = 0;
@@ -337,7 +397,16 @@ function resetForNewSession(playerData){
   stats.baseStrength = (playerData && playerData.baseStrength) || 0;
   stats.clout = (playerData && playerData.clout) || 0;
   stats.cosmetics = (playerData && playerData.cosmetics) || [];
-  equippedCosmetic = stats.cosmetics.length ? stats.cosmetics[stats.cosmetics.length - 1] : null;
+  stats.merch = (playerData && playerData.merch) || [];
+  stats.equipped = (playerData && playerData.equipped) || { head: null, face: null, neck: null, feet: null };
+  stats.trophies = (playerData && playerData.trophies) || { wolf: 0, cockfight: 0 };
+  stats.sizeBoosted = !!(playerData && playerData.sizeBoosted);
+  sizeMultiplier = stats.sizeBoosted ? 2 : 1;
+  driving = false;
+  hasDroppedKeyThisBinge = false;
+  houseModalOpen = false;
+  closetModalOpen = false;
+  activeHouseId = null;
   chunderActive = false;
   chunderFramesLeft = 0;
   partyFowlUntil = 0;
@@ -355,6 +424,7 @@ window.addEventListener("cf:authready", (e) => {
   displayName = e.detail.displayName;
   resetForNewSession(e.detail.playerData);
   initMultiplayer(uid, displayName);
+  startFratHouses();
   startLoop();
   if (DEBUG) console.log("[ChickenFrat] session ready for", e.detail.displayName);
 });
@@ -362,25 +432,34 @@ window.addEventListener("cf:authready", (e) => {
 window.addEventListener("cf:signout", () => {
   uid = null;
   stopMultiplayer();
+  stopFratHouses();
   stopLoop();
 });
 
 /* ==================== input ==================== */
 const MOVE_KEYS = new Set(["ArrowUp","ArrowDown","ArrowLeft","ArrowRight","KeyW","KeyA","KeyS","KeyD"]);
 
+function isTypingTarget(el){
+  if (!el) return false;
+  const tag = el.tagName;
+  return tag === "INPUT" || tag === "TEXTAREA" || el.isContentEditable;
+}
+
 document.addEventListener("keydown", (e) => {
   if (chatOpen) return; // let the chat input's own listener handle keys while typing
+  if (isTypingTarget(document.activeElement)) return; // sign-in/sign-up fields, or anything else text-entry — never hijack these
   if (e.code === "Enter"){ e.preventDefault(); openChat(); return; }
   if (MOVE_KEYS.has(e.code)) { keys.add(e.code); e.preventDefault(); }
   if (e.code === "Space"){ e.preventDefault(); triggerInteraction(); }
 });
 document.addEventListener("keyup", (e) => {
   if (chatOpen) return;
+  if (isTypingTarget(document.activeElement)) return;
   if (MOVE_KEYS.has(e.code)) keys.delete(e.code);
 });
 
 function openChat(){
-  if (!running) return;
+  if (!running || houseModalOpen || closetModalOpen) return;
   chatOpen = true;
   keys.clear(); // don't leave the chicken drifting on whatever was held when Enter was pressed
   chatInputBar.hidden = false;
@@ -404,7 +483,7 @@ function isJailed(){ return jailUntil > Date.now(); }
 function isToiletDisabled(){ return toiletDisabledUntil > Date.now(); }
 
 function updateMovement(){
-  if (isJailed() || chatOpen){ player.moving = false; return; }
+  if (isJailed() || chatOpen || houseModalOpen || closetModalOpen){ player.moving = false; return; }
 
   let dx = 0, dy = 0;
   if (keys.has("ArrowUp") || keys.has("KeyW")) dy -= 1;
@@ -416,11 +495,13 @@ function updateMovement(){
   player.moving = moving;
   if (dx !== 0 && dy !== 0){ dx *= 0.7071; dy *= 0.7071; }
 
-  const speed = BASE_SPEED * currentSpeedMultiplier() * (playerInPool() ? POOL_SPEED_MULTIPLIER : 1);
+  const speed = driving
+    ? BASE_SPEED * CAR_SPEED_MULTIPLIER
+    : BASE_SPEED * currentSpeedMultiplier() * (playerInPool() ? POOL_SPEED_MULTIPLIER : 1);
   let moveX = dx * speed;
   let moveY = dy * speed;
 
-  if (moving && stats.beerLevel > DRUNK_DRIFT_THRESHOLD){
+  if (!driving && moving && stats.beerLevel > DRUNK_DRIFT_THRESHOLD){
     drunkPhase += 0.14;
     const driftFrac = (stats.beerLevel - DRUNK_DRIFT_THRESHOLD) / (BEER_MAX - DRUNK_DRIFT_THRESHOLD);
     const driftMag = driftFrac * DRUNK_DRIFT_MAX;
@@ -429,7 +510,7 @@ function updateMovement(){
   }
 
   player.x = Math.min(CANVAS_W - PLAYER_RADIUS, Math.max(PLAYER_RADIUS, player.x + moveX));
-  player.y = Math.min(PROPERTY_H - PLAYER_RADIUS, Math.max(PLAYER_RADIUS, player.y + moveY));
+  player.y = Math.min(CANVAS_H - PLAYER_RADIUS, Math.max(PLAYER_RADIUS, player.y + moveY));
 }
 
 function playerInPool(){
@@ -437,8 +518,23 @@ function playerInPool(){
 }
 
 /* ==================== interaction targeting (stations + loose chicks) ==================== */
+function myHouseId(){
+  const houses = getFratHouses();
+  for (const id of Object.keys(houses)){
+    if (houses[id].ownerUid === uid) return id;
+  }
+  return null;
+}
+
 function findNearestInteractable(){
-  if (isJailed() || chatOpen) return null;
+  if (isJailed() || chatOpen || houseModalOpen || closetModalOpen) return null;
+
+  if (driving){
+    // only one thing to do while driving: park
+    const d = Math.hypot(player.x - car.x, player.y - car.y);
+    return d < CAR_INTERACT_RADIUS * 1.6 ? { kind: "car", ref: car } : null;
+  }
+
   let best = null, bestDist = Infinity;
   for (const s of stations){
     const d = Math.hypot(player.x - s.x, player.y - s.y);
@@ -449,6 +545,12 @@ function findNearestInteractable(){
     const d = Math.hypot(player.x - c.x, player.y - c.y);
     if (d < CHICK_PICKUP_RADIUS && d < bestDist){ best = { kind: "chick", ref: c }; bestDist = d; }
   }
+  const carDist = Math.hypot(player.x - car.x, player.y - car.y);
+  if (carDist < CAR_INTERACT_RADIUS && carDist < bestDist){ best = { kind: "car", ref: car }; bestDist = carDist; }
+  for (const h of fratHouses){
+    const d = Math.hypot(player.x - h.x, player.y - h.y);
+    if (d < STATION_RADIUS && d < bestDist){ best = { kind: "frathouse", ref: h }; bestDist = d; }
+  }
   return best;
 }
 
@@ -458,8 +560,18 @@ function interactableLabel(hit){
     if (player.carrying.length >= carryCapacity()) return "Hands full — drop these off at the house first";
     return `Pick up ${hit.ref.label} chick`;
   }
+  if (hit.kind === "car"){
+    if (driving) return "Park the car";
+    return stats.beerLevel >= DUI_BEER_THRESHOLD ? "Get in the car" : "Drive the car";
+  }
+  if (hit.kind === "frathouse"){
+    const house = getFratHouses()[hit.ref.id] || { ownerUid: null, locked: false };
+    if (!house.ownerUid) return `Buy this frat house (${KEY_COST} Clout)`;
+    if (house.ownerUid === uid) return "Enter your frat house";
+    if (house.locked) return `Locked — ${house.ownerName || "someone"}'s frat house`;
+    return `Enter ${house.ownerName || "their"}'s frat house`;
+  }
   const s = hit.ref;
-  if (s.type === "locked") return s.label;
   if (s.type === "seed") return "Tap to eat seed";
   if (s.type === "gym") return stats.protein > 0 ? "Tap to lift" : "Nothing to lift — eat seed first";
   if (s.type === "beer") return partyFowlUntil > Date.now() ? "Locked — you're in the doghouse" : "Tap to chug";
@@ -469,11 +581,15 @@ function interactableLabel(hit){
 function interactableDisabled(hit){
   if (!hit) return false;
   if (hit.kind === "chick") return player.carrying.length >= carryCapacity();
-  return hit.ref.type === "locked";
+  if (hit.kind === "frathouse"){
+    const house = getFratHouses()[hit.ref.id] || { ownerUid: null, locked: false };
+    return !!house.ownerUid && house.ownerUid !== uid && house.locked;
+  }
+  return false;
 }
 
 function triggerInteraction(){
-  if (!running || isJailed() || chatOpen || !nearestInteractable) return;
+  if (!running || isJailed() || chatOpen || houseModalOpen || closetModalOpen || !nearestInteractable) return;
 
   if (nearestInteractable.kind === "chick"){
     if (player.carrying.length >= carryCapacity()) return;
@@ -481,6 +597,16 @@ function triggerInteraction(){
     c.carried = true;
     player.carrying.push(c.id);
     if (DEBUG) console.log("[ChickenFrat] picked up chick:", c.label);
+    return;
+  }
+
+  if (nearestInteractable.kind === "car"){
+    toggleCar();
+    return;
+  }
+
+  if (nearestInteractable.kind === "frathouse"){
+    enterOrBuyHouse(nearestInteractable.ref);
     return;
   }
 
@@ -506,13 +632,195 @@ function triggerInteraction(){
   }
 }
 
+/* ==================== car ==================== */
+function toggleCar(){
+  if (driving){
+    driving = false;
+    car.x = player.x;
+    car.y = player.y;
+    if (DEBUG) console.log("[ChickenFrat] parked the car");
+    return;
+  }
+  if (stats.beerLevel >= DUI_BEER_THRESHOLD){
+    sendToJail("DUI");
+    showToast(`DUI! Straight to jail (-${JAIL_CLOUT_PENALTY} Clout)`, COLORS.fowlRed);
+    if (DEBUG) console.log("[ChickenFrat] tried to drive drunk — straight to jail");
+    return;
+  }
+  driving = true;
+  player.x = car.x;
+  player.y = car.y;
+  if (DEBUG) console.log("[ChickenFrat] started driving");
+}
+
+/* ==================== frat houses ==================== */
+async function enterOrBuyHouse(house){
+  const state = getFratHouses()[house.id] || { ownerUid: null, locked: false };
+  if (!state.ownerUid){
+    if (stats.clout < KEY_COST){
+      showToast(`Need ${KEY_COST} Clout for a key`, COLORS.fowlRed);
+      return;
+    }
+    const result = await buyHouseKey(house.id, uid, displayName);
+    if (result.ok){
+      stats.clout -= KEY_COST;
+      queuePatch({ clout: stats.clout });
+      showToast("Bought the key! It's yours now", COLORS.cloutGreen);
+    }else{
+      showToast("Too slow — someone just bought it", COLORS.fowlRed);
+    }
+    return;
+  }
+  if (state.ownerUid !== uid && state.locked) return; // shouldn't happen, button is disabled, but be safe
+  activeHouseId = house.id;
+  houseModalOpen = true;
+  renderHouseModal();
+}
+
+/* ==================== house modal, closet, shrine ==================== */
+function escapeHTML(str){
+  const div = document.createElement("div");
+  div.textContent = String(str == null ? "" : str);
+  return div.innerHTML;
+}
+
+function closeHouseModal(){
+  houseModalOpen = false;
+  activeHouseId = null;
+  houseModalEl.hidden = true;
+}
+
+function renderHouseModal(){
+  const house = getFratHouses()[activeHouseId];
+  if (!house){ closeHouseModal(); return; }
+  const mine = house.ownerUid === uid;
+
+  houseModalTitleEl.textContent = mine ? "Your Frat House" : `${house.ownerName || "Someone"}'s Frat House`;
+
+  const trophyCount = stats.trophies.wolf + stats.trophies.cockfight;
+  let trophyHtml = '<div class="trophy-shelf">';
+  if (trophyCount === 0){
+    trophyHtml += '<span class="trophy-empty">No trophies on the shelf yet — go win some fights.</span>';
+  }else{
+    for (let i = 0; i < stats.trophies.cockfight; i++) trophyHtml += '<span class="trophy-icon" title="Cockfight win">🐓🏆</span>';
+    for (let i = 0; i < stats.trophies.wolf; i++) trophyHtml += '<span class="trophy-icon" title="Wolf defeated">🐺🏆</span>';
+  }
+  trophyHtml += "</div>";
+
+  let bodyHtml = trophyHtml;
+
+  if (mine){
+    bodyHtml += `
+      <div class="house-row">
+        <span class="house-owner-badge">Status: ${house.locked ? "🔒 Locked" : "🔓 Unlocked"}</span>
+        <button type="button" class="btn-small" id="house-lock-toggle-btn">${house.locked ? "Unlock" : "Lock"}</button>
+      </div>
+      <div class="house-actions">
+        <button type="button" class="btn" id="house-open-closet-btn">Open the Closet 👕</button>
+      </div>
+      <div class="shrine-box">
+        <p>🐔✨ The Golden Chicken Shrine ✨🐔</p>
+        <p>${stats.sizeBoosted ? "You have already been blessed. The chicken god's work here is done." : `Pray for a bigger cock — ${SHRINE_COST} Clout, ${Math.round(SHRINE_SUCCESS_CHANCE * 100)}% chance, once ever.`}</p>
+        <button type="button" class="btn" id="house-shrine-btn" ${stats.sizeBoosted ? "disabled" : ""}>Pray</button>
+      </div>
+    `;
+  }else{
+    bodyHtml += `<p style="text-align:center; font-size:0.82rem; opacity:0.75;">Only ${escapeHTML(house.ownerName || "the owner")} can use the closet or shrine here.</p>`;
+  }
+
+  houseModalBodyEl.innerHTML = bodyHtml;
+
+  if (mine){
+    document.getElementById("house-lock-toggle-btn").addEventListener("click", () => toggleHouseLock(house));
+    document.getElementById("house-open-closet-btn").addEventListener("click", openCloset);
+    document.getElementById("house-shrine-btn").addEventListener("click", prayAtShrine);
+  }
+
+  houseModalEl.hidden = false;
+}
+
+async function toggleHouseLock(house){
+  const ok = await setHouseLocked(activeHouseId, uid, !house.locked);
+  if (ok) renderHouseModal();
+}
+
+async function prayAtShrine(){
+  if (stats.sizeBoosted) return;
+  if (stats.clout < SHRINE_COST){
+    showToast(`Need ${SHRINE_COST} Clout to pray`, COLORS.fowlRed);
+    return;
+  }
+  stats.clout -= SHRINE_COST;
+  const blessed = Math.random() < SHRINE_SUCCESS_CHANCE;
+  if (blessed){
+    stats.sizeBoosted = true;
+    sizeMultiplier = 2;
+    queuePatch({ clout: stats.clout, sizeBoosted: true });
+    showToast("IT WORKED! Blessed by the Golden Chicken — 2x size, forever", COLORS.cloutGreen);
+  }else{
+    queuePatch({ clout: stats.clout });
+    showToast("The Golden Chicken was not impressed. Try again sometime.", COLORS.wallLine);
+  }
+  renderHouseModal();
+}
+
+/* ---------------- closet ---------------- */
+function openCloset(){
+  closetModalOpen = true;
+  renderClosetModal();
+  closetModalEl.hidden = false;
+}
+function closeCloset(){
+  closetModalOpen = false;
+  closetModalEl.hidden = true;
+}
+
+function renderClosetModal(){
+  closetGridEl.innerHTML = MERCH_CATALOG.map(item => {
+    const owned = stats.merch.includes(item.id);
+    const equipped = stats.equipped[item.slot] === item.id;
+    const btnLabel = equipped ? "Equipped" : owned ? "Equip" : `Buy (${item.cost})`;
+    const disabled = equipped || (!owned && stats.clout < item.cost);
+    return `
+      <div class="closet-item ${equipped ? "equipped" : ""}">
+        <div class="closet-swatch" style="background:${item.color}"></div>
+        <div class="closet-item-label">${escapeHTML(item.label)}</div>
+        <div class="closet-item-cost">${owned ? "Owned" : item.cost + " Clout"}</div>
+        <button type="button" data-item-id="${item.id}" ${disabled ? "disabled" : ""}>${btnLabel}</button>
+      </div>
+    `;
+  }).join("");
+
+  closetGridEl.querySelectorAll("button[data-item-id]").forEach(btn => {
+    btn.addEventListener("click", () => handleMerchClick(btn.dataset.itemId));
+  });
+}
+
+function handleMerchClick(itemId){
+  const item = merchById(itemId);
+  if (!item) return;
+  const owned = stats.merch.includes(item.id);
+  if (owned){
+    stats.equipped = { ...stats.equipped, [item.slot]: item.id };
+    queuePatch({ equipped: stats.equipped });
+  }else{
+    if (stats.clout < item.cost) return;
+    stats.clout -= item.cost;
+    stats.merch = [...stats.merch, item.id];
+    stats.equipped = { ...stats.equipped, [item.slot]: item.id };
+    queuePatch({ clout: stats.clout, merch: stats.merch, equipped: stats.equipped });
+    showToast(`Bought ${item.label}!`, COLORS.cloutGreen);
+  }
+  renderClosetModal();
+}
+
 /* ==================== toilet: pee or poop ==================== */
 function playerNearBathroom(){
   const bathroom = stations.find(s => s.type === "bathroom");
   return Math.hypot(player.x - bathroom.x, player.y - bathroom.y) < STATION_RADIUS;
 }
 function doPee(){
-  if (!running || isJailed() || chatOpen) return;
+  if (!running || isJailed() || chatOpen || houseModalOpen || closetModalOpen) return;
   if (isToiletDisabled() || !playerNearBathroom()) return;
   const relief = Math.min(stats.beerLevel, PEE_RELIEF_AMOUNT);
   stats.beerLevel = Math.max(0, stats.beerLevel - PEE_RELIEF_AMOUNT);
@@ -520,7 +828,7 @@ function doPee(){
   if (DEBUG) console.log("[ChickenFrat] peed — beer level now", stats.beerLevel);
 }
 function doPoop(){
-  if (!running || isJailed() || chatOpen) return;
+  if (!running || isJailed() || chatOpen || houseModalOpen || closetModalOpen) return;
   if (isToiletDisabled() || !playerNearBathroom()) return;
   toiletDisabledUntil = Date.now() + TOILET_DISABLED_MS;
   triggerPartyFowl("poop");
@@ -528,7 +836,7 @@ function doPoop(){
   if (DEBUG) console.log("[ChickenFrat] pooped — instant Party Fowl, toilet out of order for 60s");
 }
 function doPoolPee(){
-  if (!running || isJailed() || chatOpen) return;
+  if (!running || isJailed() || chatOpen || houseModalOpen || closetModalOpen) return;
   if (!playerInPool()) return;
   triggerPartyFowl("pool-pee");
   showToast("PARTY FOWL! You peed in the pool", COLORS.fowlRed);
@@ -590,9 +898,10 @@ function pruneFowlTimestamps(){
   const cutoff = Date.now() - JAIL_WINDOW_MS;
   fowlTimestamps = fowlTimestamps.filter(t => t > cutoff);
 }
-function sendToJail(){
+function sendToJail(reason){
   jailUntil = Date.now() + JAIL_LOCKOUT_MS;
   fowlTimestamps = [];
+  driving = false; // the car gets impounded, you don't drive it into the cell
   // release any carried chicks back into the wild — you're going away for a bit
   player.carrying.forEach(id => {
     const c = chicks.find(ch => ch.id === id);
@@ -603,7 +912,12 @@ function sendToJail(){
   player.carrying = [];
   player.x = JAIL_RECT.x + JAIL_RECT.w / 2;
   player.y = JAIL_RECT.y + JAIL_RECT.h / 2;
-  if (DEBUG) console.log("[ChickenFrat] BOOKED — too many Party Fowls, locked up for 60s");
+
+  const cloutLost = Math.min(stats.clout, JAIL_CLOUT_PENALTY);
+  stats.clout = Math.max(0, stats.clout - JAIL_CLOUT_PENALTY);
+  queuePatch({ clout: stats.clout });
+
+  if (DEBUG) console.log("[ChickenFrat] BOOKED (" + (reason || "party fowls") + ") — locked up for 60s, lost", cloutLost, "Clout");
 }
 function triggerPartyFowl(reason){
   chunderActive = false;
@@ -614,8 +928,8 @@ function triggerPartyFowl(reason){
   pruneFowlTimestamps();
   if (DEBUG) console.log("[ChickenFrat] PARTY FOWL (" + reason + ") — beer locked; fowl count in window:", fowlTimestamps.length);
   if (fowlTimestamps.length >= JAIL_FOWL_THRESHOLD){
-    sendToJail();
-    showToast("BOOKED! Too many Party Fowls", COLORS.wallLine);
+    sendToJail("3 party fowls");
+    showToast(`BOOKED! Too many Party Fowls (-${JAIL_CLOUT_PENALTY} Clout)`, COLORS.wallLine);
   }
 }
 function updateChunder(){
@@ -681,7 +995,8 @@ function resolveWolfEncounter(w){
   const totalStrength = stats.baseStrength + stats.strengthBoost;
   if (totalStrength >= w.strength){
     stats.clout += CLOUT_PER_WOLF_WIN;
-    queuePatch({ clout: stats.clout });
+    stats.trophies = { ...stats.trophies, wolf: stats.trophies.wolf + 1 };
+    queuePatch({ clout: stats.clout, trophies: stats.trophies });
     const oldStrength = w.strength;
     w.strength = Math.round(w.strength * WOLF_STRENGTH_GROWTH_MULTIPLIER);
     showToast(`+${CLOUT_PER_WOLF_WIN} Clout! Wolf defeated — it'll come back at ${w.strength} strength`, COLORS.cloutGreen);
@@ -716,7 +1031,7 @@ function updateWolfEncounters(){
 function update(){
   tick++;
   updateMovement();
-  updateLocalPresence(player.x, player.y, equippedCosmetic);
+  updateLocalPresence(player.x, player.y, { equipped: stats.equipped, driving, size: sizeMultiplier });
   nearestInteractable = findNearestInteractable();
   updateDelivery();
   updateChunder();
@@ -725,7 +1040,23 @@ function update(){
   updateWolves();
   updateWolfEncounters();
   updateCockfight();
+  updateKeyDrop();
   if (toast && toast.framesLeft > 0) toast.framesLeft--;
+}
+
+function updateKeyDrop(){
+  if (stats.beerLevel >= KEY_DROP_BEER_THRESHOLD){
+    if (hasDroppedKeyThisBinge) return;
+    const houseId = myHouseId();
+    if (houseId){
+      hasDroppedKeyThisBinge = true;
+      dropHouseKey(houseId, uid).then((ok) => {
+        if (ok) showToast("You were too drunk and dropped your frat house key!", COLORS.fowlRed);
+      });
+    }
+  }else{
+    hasDroppedKeyThisBinge = false;
+  }
 }
 
 function updateCockfight(){
@@ -739,13 +1070,14 @@ function updateCockfight(){
   if (!result) return;
 
   if (result.won){
-    const cosmetic = pickRandomCosmetic(stats.cosmetics);
-    stats.cosmetics = [...stats.cosmetics, cosmetic];
+    const item = pickRandomUnownedMerch(stats.merch);
+    stats.merch = [...stats.merch, item.id];
+    stats.equipped = { ...stats.equipped, [item.slot]: item.id };
     stats.clout += COCKFIGHT_WIN_CLOUT;
-    equippedCosmetic = cosmetic;
-    queuePatch({ clout: stats.clout, cosmetics: stats.cosmetics });
-    showToast(`Won the cockfight! +${COCKFIGHT_WIN_CLOUT} Clout + new look`, COLORS.cloutGreen);
-    if (DEBUG) console.log("[ChickenFrat] cockfight WIN vs", result.opponentName, "- unlocked", cosmetic);
+    stats.trophies = { ...stats.trophies, cockfight: stats.trophies.cockfight + 1 };
+    queuePatch({ clout: stats.clout, merch: stats.merch, equipped: stats.equipped, trophies: stats.trophies });
+    showToast(`Won the cockfight! +${COCKFIGHT_WIN_CLOUT} Clout + ${item.label}`, COLORS.cloutGreen);
+    if (DEBUG) console.log("[ChickenFrat] cockfight WIN vs", result.opponentName, "- unlocked", item.label);
   }else{
     showToast(`Lost to ${result.opponentName || "a tough bird"} — no big deal`, COLORS.wallLine);
     if (DEBUG) console.log("[ChickenFrat] cockfight loss vs", result.opponentName);
@@ -800,8 +1132,34 @@ function drawOtherPlayers(){
   });
 }
 
+function drawEquippedMerch(equipped, x, y, bodyR){
+  if (!equipped) return;
+  ["head", "face", "neck", "feet"].forEach(slot => {
+    const id = equipped[slot];
+    if (!id) return;
+    const item = merchById(id);
+    if (item) drawChickCosmetic({ cosmetic: { kind: item.kind, color: item.color } }, x, y, bodyR);
+  });
+}
+
 function drawRemoteChicken(op){
   const x = op.x, y = op.y;
+  const look = op.look || {};
+  const scale = look.size === 2 ? 2 : 1;
+
+  if (look.driving){
+    drawCarShape(x, y, scale);
+    ctx.font = "700 11px 'Baloo 2', sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillStyle = COLORS.wallLine;
+    ctx.fillText(op.displayName || "Chicken", x, y - 30 * scale);
+    ctx.textAlign = "left";
+    return;
+  }
+
+  ctx.save();
+  if (scale !== 1){ ctx.translate(x, y); ctx.scale(scale, scale); ctx.translate(-x, -y); }
+
   ctx.fillStyle = COLORS.remoteChicken;
   ctx.beginPath();
   ctx.ellipse(x, y, PLAYER_RADIUS * 0.9, PLAYER_RADIUS * 0.85, 0, 0, Math.PI * 2);
@@ -826,12 +1184,14 @@ function drawRemoteChicken(op){
   ctx.closePath();
   ctx.fill();
 
-  if (op.cosmetic) drawChickCosmetic({ cosmetic: op.cosmetic }, x, y, PLAYER_RADIUS * 0.9);
+  drawEquippedMerch(look.equipped, x, y, PLAYER_RADIUS * 0.9);
+
+  ctx.restore();
 
   ctx.font = "700 11px 'Baloo 2', sans-serif";
   ctx.textAlign = "center";
   ctx.fillStyle = COLORS.wallLine;
-  ctx.fillText(op.displayName || "Chicken", x, y - PLAYER_RADIUS - 8);
+  ctx.fillText(op.displayName || "Chicken", x, y - (PLAYER_RADIUS + 8) * scale);
   ctx.textAlign = "left";
 }
 
@@ -979,18 +1339,22 @@ function drawWolf(w){
 
 /* ---------------- street ---------------- */
 function drawStreet(){
+  // house-row band (between the yard fence and the sidewalk)
+  ctx.fillStyle = COLORS.houseRowBg;
+  ctx.fillRect(0, HOUSE_ROW_Y, CANVAS_W, HOUSE_ROW_H);
+
   ctx.fillStyle = COLORS.sidewalk;
-  ctx.fillRect(0, PROPERTY_H, CANVAS_W, 14);
+  ctx.fillRect(0, SIDEWALK_Y, CANVAS_W, SIDEWALK_H);
 
   ctx.fillStyle = COLORS.street;
-  ctx.fillRect(0, PROPERTY_H + 14, CANVAS_W, STREET_H - 14);
+  ctx.fillRect(0, ROAD_Y, CANVAS_W, ROAD_H);
 
   ctx.strokeStyle = COLORS.laneLine;
   ctx.lineWidth = 4;
   ctx.setLineDash([26, 18]);
   ctx.beginPath();
-  ctx.moveTo(0, PROPERTY_H + 14 + (STREET_H - 14) / 2);
-  ctx.lineTo(CANVAS_W, PROPERTY_H + 14 + (STREET_H - 14) / 2);
+  ctx.moveTo(0, ROAD_Y + ROAD_H / 2);
+  ctx.lineTo(CANVAS_W, ROAD_Y + ROAD_H / 2);
   ctx.stroke();
   ctx.setLineDash([]);
 
@@ -1002,6 +1366,8 @@ function drawStreet(){
     ctx.strokeRect(x, PROPERTY_H - 14, 8, 16);
   }
 
+  fratHouses.forEach(drawFratHouse);
+  drawCar();
   chicks.forEach(c => { if (!c.carried && c.roamRect === ROAM_ZONES.street) drawChick(c); });
 }
 
@@ -1259,6 +1625,80 @@ function drawFightRing(s){
   ctx.textAlign = "left";
 }
 
+/* ---------------- car ---------------- */
+function drawCarShape(x, y, scale = 1){
+  const w = 44 * scale, h = 26 * scale;
+  ctx.fillStyle = COLORS.carBody;
+  ctx.strokeStyle = COLORS.wallLine;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(x - w / 2, y - h / 2 + 6 * scale);
+  ctx.lineTo(x - w / 2 + 8 * scale, y - h / 2);
+  ctx.lineTo(x + w / 2 - 8 * scale, y - h / 2);
+  ctx.lineTo(x + w / 2, y - h / 2 + 6 * scale);
+  ctx.lineTo(x + w / 2, y + h / 2);
+  ctx.lineTo(x - w / 2, y + h / 2);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.fillStyle = COLORS.carWindow;
+  ctx.fillRect(x - w / 2 + 10 * scale, y - h / 2 + 3 * scale, w * 0.55, h * 0.4);
+
+  ctx.fillStyle = COLORS.carWheel;
+  ctx.beginPath(); ctx.arc(x - w * 0.28, y + h / 2, 5 * scale, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(x + w * 0.28, y + h / 2, 5 * scale, 0, Math.PI * 2); ctx.fill();
+
+  ctx.fillStyle = COLORS.carBodyDark;
+  ctx.fillRect(x - w / 2, y + h / 2 - 3 * scale, w, 3 * scale);
+}
+
+function drawCar(){
+  if (driving) return; // drawn as part of the player instead while driving
+  drawCarShape(car.x, car.y);
+}
+
+/* ---------------- frat houses ---------------- */
+function drawFratHouse(house){
+  const state = getFratHouses()[house.id] || { ownerUid: null, ownerName: null, locked: false };
+  const owned = !!state.ownerUid;
+  const mine = state.ownerUid === uid;
+  const { x, y } = house;
+
+  ctx.fillStyle = owned ? COLORS.fratHouseWall : COLORS.fratHouseWallLocked;
+  ctx.fillRect(x - 42, y - 24, 84, 48);
+  ctx.strokeStyle = COLORS.wallLine;
+  ctx.lineWidth = 2;
+  ctx.strokeRect(x - 42, y - 24, 84, 48);
+
+  ctx.fillStyle = COLORS.fratHouseRoof;
+  ctx.beginPath();
+  ctx.moveTo(x - 48, y - 24);
+  ctx.lineTo(x, y - 46);
+  ctx.lineTo(x + 48, y - 24);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.fillStyle = COLORS.door;
+  ctx.fillRect(x - 10, y, 20, 24);
+
+  ctx.font = "16px sans-serif";
+  ctx.textAlign = "center";
+  if (!owned){
+    ctx.fillText("🔑", x, y - 30);
+  }else if (state.locked && !mine){
+    ctx.fillText("🔒", x, y - 30);
+  }else if (mine){
+    ctx.fillText("⭐", x, y - 30);
+  }
+
+  ctx.font = "700 11px 'Baloo 2', sans-serif";
+  ctx.fillStyle = COLORS.wallLine;
+  ctx.fillText(owned ? (state.ownerName || "Owned") : "For Sale", x, y - 52);
+  ctx.textAlign = "left";
+}
+
 /* ---------------- chicks (wandering + cosmetics) ---------------- */
 function drawChick(c, scale = 1, xOverride, yOverride){
   const x = xOverride !== undefined ? xOverride : c.x;
@@ -1332,27 +1772,53 @@ function drawChickCosmetic(c, x, y, bodyR){
     ctx.moveTo(x - bodyR * 0.7, y - bodyR * 1.5); ctx.lineTo(x + bodyR * 0.7, y - bodyR * 1.5);
     ctx.moveTo(x, y - bodyR * 1.9); ctx.lineTo(x, y - bodyR * 1.1);
     ctx.stroke();
+  }else if (kind === "chain"){
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.arc(x, y + bodyR * 0.5, bodyR * 0.5, 0.15 * Math.PI, 0.85 * Math.PI);
+    ctx.stroke();
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(x, y + bodyR * 0.98, bodyR * 0.14, 0, Math.PI * 2);
+    ctx.fill();
+  }else if (kind === "shoes"){
+    ctx.fillStyle = color;
+    ctx.strokeStyle = COLORS.wallLine;
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.ellipse(x - bodyR * 0.4, y + bodyR * 1.5, bodyR * 0.32, bodyR * 0.2, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    ctx.beginPath(); ctx.ellipse(x + bodyR * 0.4, y + bodyR * 1.5, bodyR * 0.32, bodyR * 0.2, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
   }
 }
 
 /* ---------------- player ---------------- */
 function drawPlayer(){
-  const wobble = stats.beerLevel > 40 ? Math.sin(Date.now() / 90) * (stats.beerLevel / 100) * 4 : 0;
-  const x = player.x + wobble;
+  const x = player.x;
   const y = player.y;
+
+  if (driving){
+    drawCarShape(x, y);
+    return;
+  }
+
+  const wobble = stats.beerLevel > 40 ? Math.sin(Date.now() / 90) * (stats.beerLevel / 100) * 4 : 0;
+  const drawX = x + wobble;
+
+  ctx.save();
+  if (sizeMultiplier !== 1){ ctx.translate(x, y); ctx.scale(sizeMultiplier, sizeMultiplier); ctx.translate(-x, -y); }
 
   const legSwing = player.moving ? (Math.floor(tick / 6) % 2 === 0 ? 5 : -5) : 0;
   ctx.strokeStyle = COLORS.chickenLeg; ctx.lineWidth = 3;
   ctx.beginPath();
-  ctx.moveTo(x - 6, y + PLAYER_RADIUS * 0.7);
-  ctx.lineTo(x - 6 + legSwing * 0.3, y + PLAYER_RADIUS * 0.7 + 10);
-  ctx.moveTo(x + 6, y + PLAYER_RADIUS * 0.7);
-  ctx.lineTo(x + 6 - legSwing * 0.3, y + PLAYER_RADIUS * 0.7 + 10);
+  ctx.moveTo(drawX - 6, y + PLAYER_RADIUS * 0.7);
+  ctx.lineTo(drawX - 6 + legSwing * 0.3, y + PLAYER_RADIUS * 0.7 + 10);
+  ctx.moveTo(drawX + 6, y + PLAYER_RADIUS * 0.7);
+  ctx.lineTo(drawX + 6 - legSwing * 0.3, y + PLAYER_RADIUS * 0.7 + 10);
   ctx.stroke();
   ctx.fillStyle = COLORS.chickenBeak;
   ctx.beginPath();
-  ctx.ellipse(x - 6 + legSwing * 0.3, y + PLAYER_RADIUS * 0.7 + 11, 4, 2.2, 0, 0, Math.PI * 2);
-  ctx.ellipse(x + 6 - legSwing * 0.3, y + PLAYER_RADIUS * 0.7 + 11, 4, 2.2, 0, 0, Math.PI * 2);
+  ctx.ellipse(drawX - 6 + legSwing * 0.3, y + PLAYER_RADIUS * 0.7 + 11, 4, 2.2, 0, 0, Math.PI * 2);
+  ctx.ellipse(drawX + 6 - legSwing * 0.3, y + PLAYER_RADIUS * 0.7 + 11, 4, 2.2, 0, 0, Math.PI * 2);
   ctx.fill();
 
   if (isJailed()){
@@ -1361,35 +1827,36 @@ function drawPlayer(){
 
   ctx.fillStyle = COLORS.chickenBody;
   ctx.beginPath();
-  ctx.ellipse(x, y, PLAYER_RADIUS, PLAYER_RADIUS * 0.95, 0, 0, Math.PI * 2);
+  ctx.ellipse(drawX, y, PLAYER_RADIUS, PLAYER_RADIUS * 0.95, 0, 0, Math.PI * 2);
   ctx.fill();
   ctx.strokeStyle = "rgba(31,42,68,0.25)"; ctx.lineWidth = 1.5;
   ctx.stroke();
 
   ctx.fillStyle = "rgba(31,42,68,0.12)";
   ctx.beginPath();
-  ctx.ellipse(x - 4, y + 2, 8, 11, -0.3, 0, Math.PI * 2);
+  ctx.ellipse(drawX - 4, y + 2, 8, 11, -0.3, 0, Math.PI * 2);
   ctx.fill();
 
   ctx.fillStyle = COLORS.chickenComb;
   ctx.beginPath();
-  ctx.moveTo(x - 6, y - PLAYER_RADIUS + 2);
-  ctx.lineTo(x - 2, y - PLAYER_RADIUS - 8);
-  ctx.lineTo(x + 2, y - PLAYER_RADIUS + 2);
-  ctx.lineTo(x + 6, y - PLAYER_RADIUS - 6);
-  ctx.lineTo(x + 9, y - PLAYER_RADIUS + 3);
+  ctx.moveTo(drawX - 6, y - PLAYER_RADIUS + 2);
+  ctx.lineTo(drawX - 2, y - PLAYER_RADIUS - 8);
+  ctx.lineTo(drawX + 2, y - PLAYER_RADIUS + 2);
+  ctx.lineTo(drawX + 6, y - PLAYER_RADIUS - 6);
+  ctx.lineTo(drawX + 9, y - PLAYER_RADIUS + 3);
   ctx.closePath(); ctx.fill();
 
   ctx.fillStyle = COLORS.chickenBeak;
   ctx.beginPath();
-  ctx.moveTo(x + PLAYER_RADIUS - 4, y);
-  ctx.lineTo(x + PLAYER_RADIUS + 8, y + 3);
-  ctx.lineTo(x + PLAYER_RADIUS - 4, y + 7);
+  ctx.moveTo(drawX + PLAYER_RADIUS - 4, y);
+  ctx.lineTo(drawX + PLAYER_RADIUS + 8, y + 3);
+  ctx.lineTo(drawX + PLAYER_RADIUS - 4, y + 7);
   ctx.closePath(); ctx.fill();
 
-  if (equippedCosmetic) drawChickCosmetic({ cosmetic: equippedCosmetic }, x, y, PLAYER_RADIUS);
+  drawEquippedMerch(stats.equipped, drawX, y, PLAYER_RADIUS);
 
   ctx.globalAlpha = 1;
+  ctx.restore();
 
   const n = player.carrying.length;
   player.carrying.forEach((id, i) => {
@@ -1397,7 +1864,7 @@ function drawPlayer(){
     const bob = Math.sin(tick / 10 + i) * 2;
     const spacing = 16;
     const startX = x - ((n - 1) * spacing) / 2;
-    drawChick(c, 0.8, startX + i * spacing, y - PLAYER_RADIUS - 20 + bob);
+    drawChick(c, 0.8, startX + i * spacing, y - PLAYER_RADIUS * sizeMultiplier - 20 + bob);
   });
 }
 
@@ -1422,10 +1889,11 @@ function syncHud(){
   document.getElementById("meter-beer-value").textContent = Math.floor(stats.beerLevel);
   document.getElementById("meter-strength-value").textContent = Math.floor(stats.baseStrength + stats.strengthBoost);
   document.getElementById("meter-clout-value").textContent = Math.floor(stats.clout);
+  document.getElementById("trophy-value").textContent = stats.trophies.wolf + stats.trophies.cockfight;
 
   const nearBathroomStation = nearestInteractable && nearestInteractable.kind === "station" && nearestInteractable.ref.type === "bathroom";
 
-  if (nearBathroomStation && !isJailed()){
+  if (nearBathroomStation && !isJailed() && !houseModalOpen && !closetModalOpen){
     const s = nearestInteractable.ref;
     if (isToiletDisabled()){
       stationBtn.hidden = false;
@@ -1459,7 +1927,7 @@ function syncHud(){
     toiletPoopBtn.hidden = true;
   }
 
-  if (playerInPool() && !isJailed() && !chatOpen){
+  if (playerInPool() && !isJailed() && !chatOpen && !houseModalOpen && !closetModalOpen){
     poolPeeBtn.hidden = false;
     poolPeeBtn.style.left = player.x + "px";
     poolPeeBtn.style.top = (player.y - 30) + "px";
@@ -1527,11 +1995,24 @@ function initGame(){
   toiletPeeBtn = document.getElementById("toilet-pee-btn");
   toiletPoopBtn = document.getElementById("toilet-poop-btn");
   poolPeeBtn = document.getElementById("pool-pee-btn");
+  houseModalEl = document.getElementById("house-modal");
+  houseModalTitleEl = document.getElementById("house-modal-title");
+  houseModalBodyEl = document.getElementById("house-modal-body");
+  closetModalEl = document.getElementById("closet-modal");
+  closetGridEl = document.getElementById("closet-grid");
 
   stationBtn.addEventListener("click", triggerInteraction);
   toiletPeeBtn.addEventListener("click", doPee);
   toiletPoopBtn.addEventListener("click", doPoop);
   poolPeeBtn.addEventListener("click", doPoolPee);
+  document.getElementById("house-modal-close-btn").addEventListener("click", closeHouseModal);
+  document.getElementById("closet-close-btn").addEventListener("click", closeCloset);
+
+  document.addEventListener("keydown", (e) => {
+    if (e.code !== "Escape") return;
+    if (closetModalOpen){ closeCloset(); }
+    else if (houseModalOpen){ closeHouseModal(); }
+  });
 
   chatInputEl.addEventListener("keydown", (e) => {
     e.stopPropagation();
