@@ -10,7 +10,7 @@
    owns only the fast, ephemeral stuff.
 
    Data shape at /presence/{uid}:
-     { displayName, x, y, updatedAt, chat: { text, sentAt }, cosmetic? }
+     { displayName, x, y, updatedAt, chat: { text, sentAt }, look?: { equipped, driving, size } }
 
    COCKFIGHT MATCHMAKING (no backend/Cloud Functions, so this is a
    best-effort, client-driven design — fine for a casual small-scale
@@ -94,22 +94,22 @@ export function stopMultiplayer(){
   otherPlayersCache = {};
 }
 
-/** Called every frame from game.js — internally throttled, cheap to call often. cosmetic is {kind,color}|null. */
-export function updateLocalPresence(x, y, cosmetic){
+/** Called every frame from game.js — internally throttled, cheap to call often. look is {equipped, driving, size}. */
+export function updateLocalPresence(x, y, look){
   if (!currentUid || !isRealtimeDbConfigured) return;
   const now = Date.now();
   if (now - lastPresenceWriteAt < PRESENCE_WRITE_INTERVAL_MS) return;
   lastPresenceWriteAt = now;
-  const cosmeticKey = cosmetic ? cosmetic.kind + cosmetic.color : null;
+  const lookKey = look ? JSON.stringify(look) : null;
   const patch = {
     displayName: currentDisplayName,
     x: Math.round(x),
     y: Math.round(y),
     updatedAt: serverTimestamp()
   };
-  if (cosmeticKey !== lastSentCosmeticKey){
-    patch.cosmetic = cosmetic || null;
-    lastSentCosmeticKey = cosmeticKey;
+  if (lookKey !== lastSentCosmeticKey){
+    patch.look = look || null;
+    lastSentCosmeticKey = lookKey;
   }
   update(ref(rtdb, `presence/${currentUid}`), patch)
     .catch((err) => console.error("[ChickenFrat] presence update failed:", err));
@@ -122,7 +122,7 @@ export function sendChatMessage(text){
   }).catch((err) => console.error("[ChickenFrat] chat send failed:", err));
 }
 
-/** Returns a map of { uid: {displayName, x, y, chat?, cosmetic?} } for everyone but you, excluding stale/ghost entries. */
+/** Returns a map of { uid: {displayName, x, y, chat?, look?} } for everyone but you, excluding stale/ghost entries. */
 export function getOtherPlayers(){
   const now = Date.now();
   const alive = {};
