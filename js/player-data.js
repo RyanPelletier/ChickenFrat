@@ -28,6 +28,10 @@ function defaultPlayerDoc(displayName){
     baseStrength: 0,
     clout: 0,
     cosmetics: [],
+    merch: [],
+    equipped: { head: null, face: null, neck: null, feet: null },
+    trophies: { wolf: 0, cockfight: 0 },
+    sizeBoosted: false,
     createdAt: serverTimestamp(),
     lastSeen: serverTimestamp()
   };
