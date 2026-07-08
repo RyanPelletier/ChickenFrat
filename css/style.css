@@ -353,3 +353,104 @@ button, input{ font-family: inherit; }
   font-size: 0.9rem;
 }
 .chat-input-bar input:focus{ outline: 3px solid var(--cf-pink); }
+
+/* ==================== FRAT HOUSE + CLOSET MODALS ==================== */
+.house-card, .closet-card{
+  width: min(520px, 92vw);
+  max-height: 85vh;
+  overflow-y: auto;
+  text-align: left;
+}
+.house-card h2, .closet-card h2{
+  font-family: var(--font-display);
+  margin: 0 0 4px;
+  text-align: center;
+}
+.closet-subtitle{
+  text-align: center;
+  font-size: 0.82rem;
+  opacity: 0.7;
+  margin: 0 0 16px;
+}
+
+.house-row{
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 10px 0;
+}
+.house-owner-badge{
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 0.85rem;
+}
+.trophy-shelf{
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  background: var(--cf-white);
+  border: 3px solid var(--cf-navy);
+  border-radius: var(--radius-md);
+  padding: 10px;
+  margin: 10px 0;
+  min-height: 40px;
+  align-items: center;
+}
+.trophy-shelf .trophy-icon{ font-size: 1.3rem; }
+.trophy-shelf .trophy-empty{ font-size: 0.8rem; opacity: 0.6; }
+
+.house-actions{
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 14px;
+}
+.house-actions .btn{ width: 100%; }
+
+.shrine-box{
+  background: #FFF3D6;
+  border: 3px dashed var(--gold, #E0B84B);
+  border-radius: var(--radius-md);
+  padding: 12px;
+  margin-top: 12px;
+  text-align: center;
+}
+.shrine-box p{ margin: 0 0 8px; font-size: 0.82rem; }
+
+.closet-grid{
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 10px;
+  margin-bottom: 16px;
+}
+.closet-item{
+  border: 3px solid var(--cf-navy);
+  border-radius: var(--radius-md);
+  padding: 10px;
+  text-align: center;
+  background: var(--cf-white);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: center;
+}
+.closet-item.equipped{ background: var(--cf-yellow); }
+.closet-swatch{
+  width: 28px; height: 28px;
+  border-radius: 50%;
+  border: 2px solid var(--cf-navy);
+}
+.closet-item-label{ font-weight: 700; font-size: 0.78rem; }
+.closet-item-cost{ font-family: var(--font-mono); font-size: 0.75rem; opacity: 0.75; }
+.closet-item button{
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 0.75rem;
+  border: 2px solid var(--cf-navy);
+  border-radius: 999px;
+  padding: 4px 10px;
+  cursor: pointer;
+  background: var(--cf-grass);
+}
+.closet-item button:disabled{ background: #E0DACB; cursor: not-allowed; opacity: 0.7; }
