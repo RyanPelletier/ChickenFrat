@@ -18,13 +18,13 @@ import {
   doc, collection, onSnapshot, runTransaction, updateDoc, getDoc
 } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-firestore.js";
 
-export const HOUSE_IDS = ["house1", "house2", "house3", "house4"];
+export const HOUSE_IDS = Array.from({ length: 16 }, (_, i) => `house${i + 1}`);
 
 let housesCache = {};
 let unsubscribe = null;
 
 function defaultHouse(){
-  return { ownerUid: null, ownerName: null, locked: false };
+  return { ownerUid: null, ownerName: null, locked: false, color: null };
 }
 
 export function startFratHouses(){
@@ -79,6 +79,19 @@ export async function setHouseLocked(houseId, uid, locked){
     return true;
   }catch(err){
     console.error("[ChickenFrat] setHouseLocked failed:", err);
+    return false;
+  }
+}
+
+export async function setHouseColor(houseId, uid, color){
+  const ref = doc(db, "fratHouses", houseId);
+  try{
+    const snap = await getDoc(ref);
+    if (!snap.exists() || snap.data().ownerUid !== uid) return false;
+    await updateDoc(ref, { color });
+    return true;
+  }catch(err){
+    console.error("[ChickenFrat] setHouseColor failed:", err);
     return false;
   }
 }
