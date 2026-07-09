@@ -408,6 +408,22 @@ button, input{ font-family: inherit; }
 }
 .house-actions .btn{ width: 100%; }
 
+.paint-row{
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 10px 0;
+}
+.paint-swatches{ display: flex; gap: 6px; flex-wrap: wrap; }
+.paint-swatch{
+  width: 24px; height: 24px;
+  border-radius: 50%;
+  border: 2px solid var(--cf-navy);
+  cursor: pointer;
+  padding: 0;
+}
+.paint-swatch.active{ outline: 3px solid var(--cf-pink); }
+
 .shrine-box{
   background: #FFF3D6;
   border: 3px dashed var(--gold, #E0B84B);
