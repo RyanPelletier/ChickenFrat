@@ -39,23 +39,23 @@
 import { queuePatch } from "./player-data.js";
 import {
   initMultiplayer, stopMultiplayer, updateLocalPresence, sendChatMessage, getOtherPlayers, isMultiplayerAvailable,
-  getCockfightState, joinCockfight, leaveCockfight, consumeCockfightResult
+  getCockfightState, joinCockfight, leaveCockfight, consumeCockfightResult, sendPledge, consumePledges
 } from "./multiplayer.js";
 import {
-  startFratHouses, stopFratHouses, getFratHouses, buyHouseKey, setHouseLocked, dropHouseKey
+  startFratHouses, stopFratHouses, getFratHouses, buyHouseKey, setHouseLocked, setHouseColor, dropHouseKey
 } from "./frat-houses.js";
 
 /* ==================== CONFIG — tweak freely ==================== */
-const CANVAS_W = 960;
-const PROPERTY_H = 600;   // forest/backyard/house/lawn/gym area
-const HOUSE_ROW_H = 70;   // frat house facades, right at the edge of the property
+const PROPERTY_W = 960;   // forest/backyard/house/lawn/gym interior
+const PROPERTY_H = 600;
+const ROAD_H = 86;        // innermost ring, hugs the property — this is what "the road" means for the car
 const SIDEWALK_H = 14;
-const ROAD_H = 86;        // lane line, wandering chicks, the car
-const STREET_H = HOUSE_ROW_H + SIDEWALK_H + ROAD_H;
-const CANVAS_H = PROPERTY_H + STREET_H;
-const HOUSE_ROW_Y = PROPERTY_H;
-const SIDEWALK_Y = PROPERTY_H + HOUSE_ROW_H;
-const ROAD_Y = SIDEWALK_Y + SIDEWALK_H;
+const HOUSE_ROW_H = 70;   // outermost ring — this is where all 16 frat houses live
+const PERIMETER_BAND = ROAD_H + SIDEWALK_H + HOUSE_ROW_H;
+const PROPERTY_OFFSET_X = PERIMETER_BAND; // property interior no longer starts at (0,0) — it's inset by the ring
+const PROPERTY_OFFSET_Y = PERIMETER_BAND;
+const CANVAS_W = PROPERTY_W + PERIMETER_BAND * 2;
+const CANVAS_H = PROPERTY_H + PERIMETER_BAND * 2;
 
 const PLAYER_RADIUS = 16;
 const BASE_SPEED = 3.2;
@@ -192,14 +192,16 @@ const COLORS = {
   keyGold: "#F6C945"
 };
 
-/* ---------------- grid layout ----------------
+/* ---------------- grid layout (all offset into the property interior) ----------------
    Left column:   Forest (with Jail inset)
    Middle column: Backyard (top) / House (mid) / Front Lawn (bottom)
    Right column:  Forest patch (top) / Gym (mid, smaller now) / Pool (bottom)
    ------------------------------------------------------------------ */
-const FOREST_RECT_LEFT  = { x: 20,  y: 20, w: 280, h: 570 };
-const FOREST_RECT_RIGHT = { x: 660, y: 20, w: 280, h: 170 };
-const JAIL_RECT = { x: 70, y: 240, w: 180, h: 130 }; // inset into the left forest only
+function offsetRect(r){ return { ...r, x: r.x + PROPERTY_OFFSET_X, y: r.y + PROPERTY_OFFSET_Y }; }
+
+const FOREST_RECT_LEFT  = offsetRect({ x: 20,  y: 20, w: 280, h: 570 });
+const FOREST_RECT_RIGHT = offsetRect({ x: 660, y: 20, w: 280, h: 170 });
+const JAIL_RECT = offsetRect({ x: 70, y: 240, w: 180, h: 130 }); // inset into the left forest only
 
 const zones = [
   { key: "backyard", label: "Backyard",            x: 320, y: 20,  w: 320, h: 170, color: COLORS.backyard },
@@ -207,7 +209,7 @@ const zones = [
   { key: "lawn",     label: "Front Lawn",           x: 320, y: 420, w: 320, h: 170, color: COLORS.lawn },
   { key: "gym",      label: "Gym",                  x: 660, y: 210, w: 280, h: 190, color: COLORS.gym, roof: COLORS.roofGym, sign: "GYM" },
   { key: "pool",     label: "Pool",                 x: 660, y: 420, w: 280, h: 170, color: COLORS.pool, water: true }
-];
+].map(z => ({ ...z, x: z.x + PROPERTY_OFFSET_X, y: z.y + PROPERTY_OFFSET_Y }));
 const HOUSE_ZONE = zones.find(z => z.key === "house");
 const POOL_ZONE = zones.find(z => z.key === "pool");
 
@@ -218,7 +220,7 @@ const stations = [
   { id: "bathroom", type: "bathroom", x: 590, y: 370, label: "Bathroom Stall" },
   { id: "gym", type: "gym", x: 800, y: 300, label: "Work Out" },
   { id: "cockfight", type: "cockfight", x: 480, y: 100, label: "Cockfight Ring" }
-];
+].map(s => ({ ...s, x: s.x + PROPERTY_OFFSET_X, y: s.y + PROPERTY_OFFSET_Y }));
 const COCKFIGHT_STATION = stations.find(s => s.id === "cockfight");
 
 /* ---------------- merch: closet purchases + Cockfight Ring rewards share this catalog ----------------
@@ -247,26 +249,51 @@ function pickRandomUnownedMerch(owned){
   return pool[Math.floor(Math.random() * pool.length)];
 }
 
-/* ---------------- frat house row + car ---------------- */
-const fratHouses = [
-  { id: "house1", x: 140, y: HOUSE_ROW_Y + HOUSE_ROW_H / 2 },
-  { id: "house2", x: 380, y: HOUSE_ROW_Y + HOUSE_ROW_H / 2 },
-  { id: "house3", x: 620, y: HOUSE_ROW_Y + HOUSE_ROW_H / 2 },
-  { id: "house4", x: 860, y: HOUSE_ROW_Y + HOUSE_ROW_H / 2 }
-];
+/* ---------------- 16 frat houses, 4 per side, out in the house band beyond the road ----------------
+   All 16 use the same unrotated building sprite regardless of which
+   side of the map they're on (a deliberate simplification — properly
+   rotating the roof/door to face the road on all 4 sides would need a
+   meaningfully bigger art pass for a purely presentational upgrade). */
+const HOUSE_BAND_MID = ROAD_H + SIDEWALK_H + HOUSE_ROW_H / 2; // distance from the property edge to the house row's centerline
+function sideSpread(n, total){
+  const out = [];
+  for (let i = 0; i < n; i++) out.push(total * (i + 0.5) / n);
+  return out;
+}
+const fratHouses = [];
+(function seedFratHouses(){
+  let n = 1;
+  sideSpread(4, PROPERTY_W).forEach(dx => {
+    fratHouses.push({ id: `house${n++}`, side: "top", x: PROPERTY_OFFSET_X + dx, y: PROPERTY_OFFSET_Y - HOUSE_BAND_MID });
+  });
+  sideSpread(4, PROPERTY_W).forEach(dx => {
+    fratHouses.push({ id: `house${n++}`, side: "bottom", x: PROPERTY_OFFSET_X + dx, y: PROPERTY_OFFSET_Y + PROPERTY_H + HOUSE_BAND_MID });
+  });
+  sideSpread(4, PROPERTY_H).forEach(dy => {
+    fratHouses.push({ id: `house${n++}`, side: "left", x: PROPERTY_OFFSET_X - HOUSE_BAND_MID, y: PROPERTY_OFFSET_Y + dy });
+  });
+  sideSpread(4, PROPERTY_H).forEach(dy => {
+    fratHouses.push({ id: `house${n++}`, side: "right", x: PROPERTY_OFFSET_X + PROPERTY_W + HOUSE_BAND_MID, y: PROPERTY_OFFSET_Y + dy });
+  });
+})();
+
 const KEY_COST = 150;
 const KEY_DROP_BEER_THRESHOLD = 90;
 const SHRINE_COST = 100;
 const SHRINE_SUCCESS_CHANCE = 0.05;
+const PLEDGE_AMOUNT = 100;
+const PAINT_COLORS = ["#F4E9D8", "#FF8FB1", "#3F8FD1", "#6BBF4A", "#E8433D", "#F6C945", "#7A5A9E", "#1F2A44"];
 
-const car = { x: 500, y: ROAD_Y + ROAD_H - 22 };
+/* ---------------- car (starts parked on the bottom stretch of the road) ---------------- */
+const car = { x: PROPERTY_OFFSET_X + PROPERTY_W / 2, y: PROPERTY_OFFSET_Y + PROPERTY_H + ROAD_H / 2 };
+const CAR_OFFROAD_GRACE_FRAMES = 20; // brief buffer so one noisy frame near the curb doesn't insta-jail you
 
 /* ---------------- decorative front-lawn chairs ---------------- */
 const lawnChairs = [
   { x: 390, y: 480, color: COLORS.chairSeat },
   { x: 560, y: 490, color: COLORS.chairSeat2 },
   { x: 480, y: 540, color: COLORS.chairSeat }
-];
+].map(c => ({ ...c, x: c.x + PROPERTY_OFFSET_X, y: c.y + PROPERTY_OFFSET_Y }));
 
 /* ---------------- helpers ---------------- */
 function pointInRect(p, r){
@@ -284,11 +311,27 @@ function randomForestPoint(rect){
   return p;
 }
 
+/** Is (x,y) within the ring road that hugs all 4 sides of the property? Used for the DUI-style "left the road" jail rule. */
+function isOnRoad(x, y){
+  const px0 = PROPERTY_OFFSET_X, py0 = PROPERTY_OFFSET_Y;
+  const top = y >= py0 - ROAD_H && y < py0 && x >= 0 && x <= CANVAS_W;
+  const bottom = y >= py0 + PROPERTY_H && y < py0 + PROPERTY_H + ROAD_H && x >= 0 && x <= CANVAS_W;
+  const left = x >= px0 - ROAD_H && x < px0 && y >= py0 && y <= py0 + PROPERTY_H;
+  const right = x >= px0 + PROPERTY_W && x < px0 + PROPERTY_W + ROAD_H && y >= py0 && y <= py0 + PROPERTY_H;
+  return top || bottom || left || right;
+}
+
 /* ---------------- ten chicks, each with a distinct cosmetic + home roam zone ---------------- */
+const ROAD_ROAM_RECTS = {
+  top: { x: PROPERTY_OFFSET_X + 20, y: PROPERTY_OFFSET_Y - ROAD_H + 12, w: PROPERTY_W - 40, h: ROAD_H - 24 },
+  bottom: { x: PROPERTY_OFFSET_X + 20, y: PROPERTY_OFFSET_Y + PROPERTY_H + 12, w: PROPERTY_W - 40, h: ROAD_H - 24 },
+  left: { x: PROPERTY_OFFSET_X - ROAD_H + 12, y: PROPERTY_OFFSET_Y + 20, w: ROAD_H - 24, h: PROPERTY_H - 40 },
+  right: { x: PROPERTY_OFFSET_X + PROPERTY_W + 12, y: PROPERTY_OFFSET_Y + 20, w: ROAD_H - 24, h: PROPERTY_H - 40 }
+};
 const ROAM_ZONES = {
-  backyard: { x: 335, y: 35,  w: 290, h: 140 },
-  lawn:     { x: 335, y: 435, w: 290, h: 140 },
-  street:   { x: 40,  y: ROAD_Y + 10, w: 880, h: ROAD_H - 24 }
+  backyard: offsetRect({ x: 335, y: 35,  w: 290, h: 140 }),
+  lawn:     offsetRect({ x: 335, y: 435, w: 290, h: 140 }),
+  street:   ROAD_ROAM_RECTS.bottom
 };
 
 const CHICK_DEFS = [
@@ -363,7 +406,10 @@ let chatInputBar, chatInputEl;
 let chatOpen = false;
 let localChatBubble = null; // { text, sentAt }
 
-let player = { x: 400, y: 240, moving: false, carrying: [] };
+const SPAWN_X = PROPERTY_OFFSET_X + 400; // inside the house, same relative spot as before the perimeter expansion
+const SPAWN_Y = PROPERTY_OFFSET_Y + 240;
+
+let player = { x: SPAWN_X, y: SPAWN_Y, moving: false, carrying: [] };
 const keys = new Set();
 
 let stats = {
@@ -374,6 +420,7 @@ let stats = {
 let sizeMultiplier = 1;
 
 let driving = false;
+let offRoadFrames = 0;
 let hasDroppedKeyThisBinge = false;
 
 let houseModalOpen = false;
@@ -403,6 +450,7 @@ function resetForNewSession(playerData){
   stats.sizeBoosted = !!(playerData && playerData.sizeBoosted);
   sizeMultiplier = stats.sizeBoosted ? 2 : 1;
   driving = false;
+  offRoadFrames = 0;
   hasDroppedKeyThisBinge = false;
   houseModalOpen = false;
   closetModalOpen = false;
@@ -413,8 +461,8 @@ function resetForNewSession(playerData){
   fowlTimestamps = [];
   jailUntil = 0;
   toiletDisabledUntil = 0;
-  player.x = 400;
-  player.y = 240;
+  player.x = SPAWN_X;
+  player.y = SPAWN_Y;
   player.carrying = [];
   chicks.forEach(c => { c.carried = false; });
 }
@@ -710,10 +758,17 @@ function renderHouseModal(){
   let bodyHtml = trophyHtml;
 
   if (mine){
+    const paintSwatches = PAINT_COLORS.map(c => `
+      <button type="button" class="paint-swatch ${house.color === c ? "active" : ""}" data-color="${c}" style="background:${c}" title="${c}"></button>
+    `).join("");
     bodyHtml += `
       <div class="house-row">
         <span class="house-owner-badge">Status: ${house.locked ? "🔒 Locked" : "🔓 Unlocked"}</span>
         <button type="button" class="btn-small" id="house-lock-toggle-btn">${house.locked ? "Unlock" : "Lock"}</button>
+      </div>
+      <div class="paint-row">
+        <span class="house-owner-badge">Paint:</span>
+        <div class="paint-swatches">${paintSwatches}</div>
       </div>
       <div class="house-actions">
         <button type="button" class="btn" id="house-open-closet-btn">Open the Closet 👕</button>
@@ -725,7 +780,12 @@ function renderHouseModal(){
       </div>
     `;
   }else{
-    bodyHtml += `<p style="text-align:center; font-size:0.82rem; opacity:0.75;">Only ${escapeHTML(house.ownerName || "the owner")} can use the closet or shrine here.</p>`;
+    bodyHtml += `
+      <p style="text-align:center; font-size:0.82rem; opacity:0.75;">Only ${escapeHTML(house.ownerName || "the owner")} can use the closet or shrine here.</p>
+      <div class="house-actions">
+        <button type="button" class="btn" id="house-pledge-btn" ${stats.clout < PLEDGE_AMOUNT ? "disabled" : ""}>Pledge ${PLEDGE_AMOUNT} Clout to ${escapeHTML(house.ownerName || "the owner")}</button>
+      </div>
+    `;
   }
 
   houseModalBodyEl.innerHTML = bodyHtml;
@@ -734,6 +794,12 @@ function renderHouseModal(){
     document.getElementById("house-lock-toggle-btn").addEventListener("click", () => toggleHouseLock(house));
     document.getElementById("house-open-closet-btn").addEventListener("click", openCloset);
     document.getElementById("house-shrine-btn").addEventListener("click", prayAtShrine);
+    houseModalBodyEl.querySelectorAll(".paint-swatch").forEach(btn => {
+      btn.addEventListener("click", () => paintHouse(btn.dataset.color));
+    });
+  }else{
+    const pledgeBtn = document.getElementById("house-pledge-btn");
+    if (pledgeBtn) pledgeBtn.addEventListener("click", () => pledgeToHouse(house));
   }
 
   houseModalEl.hidden = false;
@@ -742,6 +808,45 @@ function renderHouseModal(){
 async function toggleHouseLock(house){
   const ok = await setHouseLocked(activeHouseId, uid, !house.locked);
   if (ok) renderHouseModal();
+}
+
+async function paintHouse(color){
+  const ok = await setHouseColor(activeHouseId, uid, color);
+  if (ok) renderHouseModal();
+}
+
+async function pledgeToHouse(house){
+  if (stats.clout < PLEDGE_AMOUNT){
+    showToast(`Need ${PLEDGE_AMOUNT} Clout to pledge`, COLORS.fowlRed);
+    return;
+  }
+  stats.clout -= PLEDGE_AMOUNT;
+  queuePatch({ clout: stats.clout });
+  const ok = await sendPledge(house.ownerUid, house.id, displayName, PLEDGE_AMOUNT);
+  if (ok){
+    showToast(`Pledged ${PLEDGE_AMOUNT} Clout to ${house.ownerName || "the owner"}!`, COLORS.cloutGreen);
+  }else{
+    stats.clout += PLEDGE_AMOUNT; // refund — the send itself failed outright
+    queuePatch({ clout: stats.clout });
+    showToast("Pledge failed — try again", COLORS.fowlRed);
+  }
+  renderHouseModal();
+}
+
+function updatePledges(){
+  const pledges = consumePledges();
+  if (!pledges.length) return;
+  let total = 0;
+  pledges.forEach(p => {
+    total += p.amount || 0;
+    if (DEBUG) console.log("[ChickenFrat] received pledge:", p);
+  });
+  if (total > 0){
+    stats.clout += total;
+    queuePatch({ clout: stats.clout });
+    const from = pledges.length === 1 ? (pledges[0].fromName || "someone") : `${pledges.length} people`;
+    showToast(`+${total} Clout pledged by ${from}!`, COLORS.cloutGreen);
+  }
 }
 
 async function prayAtShrine(){
@@ -1041,7 +1146,23 @@ function update(){
   updateWolfEncounters();
   updateCockfight();
   updateKeyDrop();
+  updatePledges();
+  updateCarRoadCheck();
   if (toast && toast.framesLeft > 0) toast.framesLeft--;
+}
+
+function updateCarRoadCheck(){
+  if (!driving){ offRoadFrames = 0; return; }
+  if (isOnRoad(player.x, player.y)){
+    offRoadFrames = 0;
+    return;
+  }
+  offRoadFrames++;
+  if (offRoadFrames > CAR_OFFROAD_GRACE_FRAMES){
+    sendToJail("left the road");
+    showToast(`Busted for leaving the road! (-${JAIL_CLOUT_PENALTY} Clout)`, COLORS.fowlRed);
+    if (DEBUG) console.log("[ChickenFrat] drove off the road — straight to jail");
+  }
 }
 
 function updateKeyDrop(){
@@ -1087,7 +1208,7 @@ function updateCockfight(){
 function draw(){
   ctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
 
-  drawStreet();
+  drawPerimeter();
   drawForest();
 
   zones.forEach(z => {
@@ -1338,33 +1459,53 @@ function drawWolf(w){
 }
 
 /* ---------------- street ---------------- */
-function drawStreet(){
-  // house-row band (between the yard fence and the sidewalk)
-  ctx.fillStyle = COLORS.houseRowBg;
-  ctx.fillRect(0, HOUSE_ROW_Y, CANVAS_W, HOUSE_ROW_H);
+function fillRing(d1, d2, color){
+  const px0 = PROPERTY_OFFSET_X, py0 = PROPERTY_OFFSET_Y;
+  const px1 = px0 + PROPERTY_W, py1 = py0 + PROPERTY_H;
+  ctx.fillStyle = color;
+  ctx.fillRect(0, py0 - d2, CANVAS_W, d2 - d1);              // top (spans full width, covers both corners)
+  ctx.fillRect(0, py1 + d1, CANVAS_W, d2 - d1);              // bottom (spans full width, covers both corners)
+  ctx.fillRect(px0 - d2, py0, d2 - d1, PROPERTY_H);          // left (property height only — corners already covered)
+  ctx.fillRect(px1 + d1, py0, d2 - d1, PROPERTY_H);          // right
+}
 
-  ctx.fillStyle = COLORS.sidewalk;
-  ctx.fillRect(0, SIDEWALK_Y, CANVAS_W, SIDEWALK_H);
-
-  ctx.fillStyle = COLORS.street;
-  ctx.fillRect(0, ROAD_Y, CANVAS_W, ROAD_H);
-
+function drawLaneLines(){
+  const px0 = PROPERTY_OFFSET_X, py0 = PROPERTY_OFFSET_Y;
+  const px1 = px0 + PROPERTY_W, py1 = py0 + PROPERTY_H;
   ctx.strokeStyle = COLORS.laneLine;
   ctx.lineWidth = 4;
   ctx.setLineDash([26, 18]);
   ctx.beginPath();
-  ctx.moveTo(0, ROAD_Y + ROAD_H / 2);
-  ctx.lineTo(CANVAS_W, ROAD_Y + ROAD_H / 2);
+  ctx.moveTo(px0 - ROAD_H, py0 - ROAD_H / 2); ctx.lineTo(px1 + ROAD_H, py0 - ROAD_H / 2);
+  ctx.moveTo(px0 - ROAD_H, py1 + ROAD_H / 2); ctx.lineTo(px1 + ROAD_H, py1 + ROAD_H / 2);
+  ctx.moveTo(px0 - ROAD_H / 2, py0 - ROAD_H); ctx.lineTo(px0 - ROAD_H / 2, py1 + ROAD_H);
+  ctx.moveTo(px1 + ROAD_H / 2, py0 - ROAD_H); ctx.lineTo(px1 + ROAD_H / 2, py1 + ROAD_H);
   ctx.stroke();
   ctx.setLineDash([]);
+}
 
+function drawPropertyFence(){
+  const px0 = PROPERTY_OFFSET_X, py0 = PROPERTY_OFFSET_Y;
+  const px1 = px0 + PROPERTY_W, py1 = py0 + PROPERTY_H;
   ctx.fillStyle = COLORS.fence;
   ctx.strokeStyle = COLORS.wallLine;
   ctx.lineWidth = 1.5;
-  for (let x = 6; x < CANVAS_W; x += 22){
-    ctx.fillRect(x, PROPERTY_H - 14, 8, 16);
-    ctx.strokeRect(x, PROPERTY_H - 14, 8, 16);
+  for (let x = px0 + 6; x < px1; x += 22){
+    ctx.fillRect(x, py0 - 2, 8, 16); ctx.strokeRect(x, py0 - 2, 8, 16);   // top edge
+    ctx.fillRect(x, py1 - 14, 8, 16); ctx.strokeRect(x, py1 - 14, 8, 16); // bottom edge
   }
+  for (let y = py0 + 6; y < py1; y += 22){
+    ctx.fillRect(px0 - 2, y, 16, 8); ctx.strokeRect(px0 - 2, y, 16, 8);   // left edge
+    ctx.fillRect(px1 - 14, y, 16, 8); ctx.strokeRect(px1 - 14, y, 16, 8); // right edge
+  }
+}
+
+function drawPerimeter(){
+  fillRing(ROAD_H + SIDEWALK_H, ROAD_H + SIDEWALK_H + HOUSE_ROW_H, COLORS.houseRowBg);
+  fillRing(ROAD_H, ROAD_H + SIDEWALK_H, COLORS.sidewalk);
+  fillRing(0, ROAD_H, COLORS.street);
+  drawLaneLines();
+  drawPropertyFence();
 
   fratHouses.forEach(drawFratHouse);
   drawCar();
@@ -1660,12 +1801,12 @@ function drawCar(){
 
 /* ---------------- frat houses ---------------- */
 function drawFratHouse(house){
-  const state = getFratHouses()[house.id] || { ownerUid: null, ownerName: null, locked: false };
+  const state = getFratHouses()[house.id] || { ownerUid: null, ownerName: null, locked: false, color: null };
   const owned = !!state.ownerUid;
   const mine = state.ownerUid === uid;
   const { x, y } = house;
 
-  ctx.fillStyle = owned ? COLORS.fratHouseWall : COLORS.fratHouseWallLocked;
+  ctx.fillStyle = owned ? (state.color || COLORS.fratHouseWall) : COLORS.fratHouseWallLocked;
   ctx.fillRect(x - 42, y - 24, 84, 48);
   ctx.strokeStyle = COLORS.wallLine;
   ctx.lineWidth = 2;
