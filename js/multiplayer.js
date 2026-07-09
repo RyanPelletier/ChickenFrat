@@ -36,7 +36,7 @@
 
 import { rtdb, isRealtimeDbConfigured } from "./firebase-init.js";
 import {
-  ref, set, update, remove, get, onValue, onDisconnect, runTransaction, serverTimestamp
+  ref, set, update, remove, get, onValue, onDisconnect, runTransaction, push, serverTimestamp
 } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-database.js";
 
 const PRESENCE_WRITE_INTERVAL_MS = 150; // throttle position writes to keep bandwidth cheap
@@ -53,6 +53,9 @@ let cockfightState = "idle"; // "idle" | "waiting"
 let cockfightResultUnsub = null;
 let pendingCockfightResult = null;
 
+let pledgeUnsubscribe = null;
+let incomingPledges = [];
+
 export function isMultiplayerAvailable(){
   return isRealtimeDbConfigured;
 }
@@ -65,6 +68,7 @@ export function initMultiplayer(uid, displayName){
   lastSentCosmeticKey = null;
   cockfightState = "idle";
   pendingCockfightResult = null;
+  incomingPledges = [];
 
   const myPresenceRef = ref(rtdb, `presence/${uid}`);
 
@@ -82,16 +86,29 @@ export function initMultiplayer(uid, displayName){
     }
     otherPlayersCache = next;
   });
+
+  // incoming pledges to houses I own — same "peer writes into my slot, I claim it" pattern as cockfight results
+  const myPledgesRef = ref(rtdb, `pledges/${uid}`);
+  pledgeUnsubscribe = onValue(myPledgesRef, (snapshot) => {
+    const val = snapshot.val() || {};
+    Object.entries(val).forEach(([pledgeId, data]) => {
+      if (!data) return;
+      incomingPledges.push(data);
+      remove(ref(rtdb, `pledges/${uid}/${pledgeId}`)).catch(() => {});
+    });
+  });
 }
 
 export function stopMultiplayer(){
   if (presenceUnsubscribe){ presenceUnsubscribe(); presenceUnsubscribe = null; }
+  if (pledgeUnsubscribe){ pledgeUnsubscribe(); pledgeUnsubscribe = null; }
   leaveCockfight();
   if (currentUid && isRealtimeDbConfigured){
     remove(ref(rtdb, `presence/${currentUid}`)).catch(() => {});
   }
   currentUid = null;
   otherPlayersCache = {};
+  incomingPledges = [];
 }
 
 /** Called every frame from game.js — internally throttled, cheap to call often. look is {equipped, driving, size}. */
@@ -208,4 +225,28 @@ export async function leaveCockfight(){
       return; // not ours anymore (already matched) — leave it alone
     });
   }catch(err){ console.error("[ChickenFrat] leaveCockfight cleanup failed:", err); }
+}
+
+/* ==================== house pledges ====================
+   Peer-to-peer Clout gift: the pledger deducts their own Clout locally
+   (they can always write their own Firestore doc) and drops a message
+   in the target owner's pledge inbox here. The owner's own client picks
+   it up next time they're online and credits their own Clout — nobody
+   ever writes to someone else's Firestore document directly. */
+export async function sendPledge(ownerUid, houseId, fromName, amount){
+  if (!isRealtimeDbConfigured || !currentUid) return false;
+  try{
+    await push(ref(rtdb, `pledges/${ownerUid}`), { fromName, houseId, amount, at: Date.now() });
+    return true;
+  }catch(err){
+    console.error("[ChickenFrat] sendPledge failed:", err);
+    return false;
+  }
+}
+
+/** Call once per frame (cheap) — returns any newly-arrived pledges and clears them. */
+export function consumePledges(){
+  const p = incomingPledges;
+  incomingPledges = [];
+  return p;
 }
