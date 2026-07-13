@@ -44,6 +44,12 @@ import {
 import {
   startFratHouses, stopFratHouses, getFratHouses, buyHouseKey, setHouseLocked, setHouseColor, dropHouseKey
 } from "./frat-houses.js";
+import {
+  isCoffeeShopAvailable, startCoffeeShop, stopCoffeeShop, getShiftRoster, isOnShift, shiftSize,
+  clockIn, clockOut, distributeOrderEarnings, consumeCoffeeEarnings,
+  getOrderAuthorityUid, broadcastMinigameEvent, consumeMinigameEvents
+} from "./coffee-shop.js";
+import { CoffeeShopMinigame } from "./coffee-shop-minigame.js";
 
 /* ==================== CONFIG — tweak freely ==================== */
 const PROPERTY_W = 960;   // forest/backyard/house/lawn/gym interior
@@ -52,10 +58,11 @@ const ROAD_H = 86;        // innermost ring, hugs the property — this is what 
 const SIDEWALK_H = 14;
 const HOUSE_ROW_H = 70;   // outermost ring — this is where all 16 frat houses live
 const PERIMETER_BAND = ROAD_H + SIDEWALK_H + HOUSE_ROW_H;
-const PROPERTY_OFFSET_X = PERIMETER_BAND; // property interior no longer starts at (0,0) — it's inset by the ring
-const PROPERTY_OFFSET_Y = PERIMETER_BAND;
-const CANVAS_W = PROPERTY_W + PERIMETER_BAND * 2;
-const CANVAS_H = PROPERTY_H + PERIMETER_BAND * 2;
+const OUTER_MARGIN = 60; // safety margin beyond the house row — without this, roofs/labels/popup buttons on the outer edge get clipped by the canvas boundary
+const PROPERTY_OFFSET_X = PERIMETER_BAND + OUTER_MARGIN; // property interior no longer starts at (0,0) — it's inset by the ring + margin
+const PROPERTY_OFFSET_Y = PERIMETER_BAND + OUTER_MARGIN;
+const CANVAS_W = PROPERTY_W + (PERIMETER_BAND + OUTER_MARGIN) * 2;
+const CANVAS_H = PROPERTY_H + (PERIMETER_BAND + OUTER_MARGIN) * 2;
 
 const PLAYER_RADIUS = 16;
 const BASE_SPEED = 3.2;
@@ -189,7 +196,10 @@ const COLORS = {
   carWindow: "#BFEFFF",
   carWheel: "#1F2A44",
   gold: "#E0B84B",
-  keyGold: "#F6C945"
+  keyGold: "#F6C945",
+  coffeeWall: "#6B4222",
+  coffeeRoof: "#3E2A18",
+  coffeeAwning: "#C9922A"
 };
 
 /* ---------------- grid layout (all offset into the property interior) ----------------
@@ -283,6 +293,17 @@ const SHRINE_COST = 100;
 const SHRINE_SUCCESS_CHANCE = 0.05;
 const PLEDGE_AMOUNT = 100;
 const PAINT_COLORS = ["#F4E9D8", "#FF8FB1", "#3F8FD1", "#6BBF4A", "#E8433D", "#F6C945", "#7A5A9E", "#1F2A44"];
+
+/* ---------------- coffee shop (bottom-left corner, beyond the house row) ----------------
+   The minigame itself (order taking, grinder/espresso/steaming mechanics,
+   scoring) is a separate module dropped in once it's built — see
+   GEMINI_PROMPT_coffee_shop.md. This is just the world placement, the
+   clock-in/out interaction, and the shift roster/earnings plumbing. */
+const COFFEE_SHOP = {
+  x: PROPERTY_OFFSET_X - HOUSE_BAND_MID,
+  y: PROPERTY_OFFSET_Y + PROPERTY_H + HOUSE_BAND_MID
+};
+const COFFEE_SHOP_INTERACT_RADIUS = 60;
 
 /* ---------------- car (starts parked on the bottom stretch of the road) ---------------- */
 const car = { x: PROPERTY_OFFSET_X + PROPERTY_W / 2, y: PROPERTY_OFFSET_Y + PROPERTY_H + ROAD_H / 2 };
@@ -387,13 +408,15 @@ seedWolves(FOREST_RECT_LEFT, 5, 0);
 seedWolves(FOREST_RECT_RIGHT, 3, 5);
 
 /* ---------------- state ---------------- */
-let canvas, ctx;
+let canvas, ctx, gameWrapEl;
 let stationBtn, chunderClockEl, chunderRingFg, chunderSecondsEl;
 let partyFowlBanner, partyFowlTimerEl, jailBanner, jailTimerEl;
 let toiletPeeBtn, toiletPoopBtn;
 let poolPeeBtn;
 let houseModalEl, houseModalTitleEl, houseModalBodyEl;
 let closetModalEl, closetGridEl;
+let coffeeShopModalEl, coffeeShopBodyEl;
+let coffeeMinigameEl, coffeeMinigameContainerEl;
 
 let uid = null;
 let displayName = "";
@@ -413,7 +436,7 @@ let player = { x: SPAWN_X, y: SPAWN_Y, moving: false, carrying: [] };
 const keys = new Set();
 
 let stats = {
-  protein: 0, baseStrength: 0, strengthBoost: 0, beerLevel: 0, clout: 0,
+  protein: 0, baseStrength: 0, strengthBoost: 0, beerLevel: 0, clout: 0, clucks: 0,
   cosmetics: [], merch: [], equipped: { head: null, face: null, neck: null, feet: null },
   trophies: { wolf: 0, cockfight: 0 }, sizeBoosted: false
 };
@@ -426,6 +449,9 @@ let hasDroppedKeyThisBinge = false;
 let houseModalOpen = false;
 let activeHouseId = null;
 let closetModalOpen = false;
+let coffeeShopModalOpen = false;
+let coffeeMinigameOpen = false;
+let coffeeMinigame = null;
 
 let chunderActive = false;
 let chunderFramesLeft = 0;
@@ -443,6 +469,7 @@ function resetForNewSession(playerData){
   stats.beerLevel = 0;
   stats.baseStrength = (playerData && playerData.baseStrength) || 0;
   stats.clout = (playerData && playerData.clout) || 0;
+  stats.clucks = (playerData && playerData.clucks) || 0;
   stats.cosmetics = (playerData && playerData.cosmetics) || [];
   stats.merch = (playerData && playerData.merch) || [];
   stats.equipped = (playerData && playerData.equipped) || { head: null, face: null, neck: null, feet: null };
@@ -454,6 +481,7 @@ function resetForNewSession(playerData){
   hasDroppedKeyThisBinge = false;
   houseModalOpen = false;
   closetModalOpen = false;
+  coffeeShopModalOpen = false;
   activeHouseId = null;
   chunderActive = false;
   chunderFramesLeft = 0;
@@ -473,6 +501,7 @@ window.addEventListener("cf:authready", (e) => {
   resetForNewSession(e.detail.playerData);
   initMultiplayer(uid, displayName);
   startFratHouses();
+  startCoffeeShop(uid);
   startLoop();
   if (DEBUG) console.log("[ChickenFrat] session ready for", e.detail.displayName);
 });
@@ -481,6 +510,9 @@ window.addEventListener("cf:signout", () => {
   uid = null;
   stopMultiplayer();
   stopFratHouses();
+  stopCoffeeShop();
+  if (coffeeMinigame){ coffeeMinigame.stop(); coffeeMinigame = null; }
+  coffeeMinigameOpen = false;
   stopLoop();
 });
 
@@ -507,7 +539,7 @@ document.addEventListener("keyup", (e) => {
 });
 
 function openChat(){
-  if (!running || houseModalOpen || closetModalOpen) return;
+  if (!running || houseModalOpen || closetModalOpen || coffeeShopModalOpen || coffeeMinigameOpen) return;
   chatOpen = true;
   keys.clear(); // don't leave the chicken drifting on whatever was held when Enter was pressed
   chatInputBar.hidden = false;
@@ -531,7 +563,7 @@ function isJailed(){ return jailUntil > Date.now(); }
 function isToiletDisabled(){ return toiletDisabledUntil > Date.now(); }
 
 function updateMovement(){
-  if (isJailed() || chatOpen || houseModalOpen || closetModalOpen){ player.moving = false; return; }
+  if (isJailed() || chatOpen || houseModalOpen || closetModalOpen || coffeeShopModalOpen || coffeeMinigameOpen){ player.moving = false; return; }
 
   let dx = 0, dy = 0;
   if (keys.has("ArrowUp") || keys.has("KeyW")) dy -= 1;
@@ -575,7 +607,7 @@ function myHouseId(){
 }
 
 function findNearestInteractable(){
-  if (isJailed() || chatOpen || houseModalOpen || closetModalOpen) return null;
+  if (isJailed() || chatOpen || houseModalOpen || closetModalOpen || coffeeShopModalOpen || coffeeMinigameOpen) return null;
 
   if (driving){
     // only one thing to do while driving: park
@@ -599,6 +631,8 @@ function findNearestInteractable(){
     const d = Math.hypot(player.x - h.x, player.y - h.y);
     if (d < STATION_RADIUS && d < bestDist){ best = { kind: "frathouse", ref: h }; bestDist = d; }
   }
+  const coffeeDist = Math.hypot(player.x - COFFEE_SHOP.x, player.y - COFFEE_SHOP.y);
+  if (coffeeDist < COFFEE_SHOP_INTERACT_RADIUS && coffeeDist < bestDist){ best = { kind: "coffeeshop", ref: COFFEE_SHOP }; bestDist = coffeeDist; }
   return best;
 }
 
@@ -619,6 +653,11 @@ function interactableLabel(hit){
     if (house.locked) return `Locked — ${house.ownerName || "someone"}'s frat house`;
     return `Enter ${house.ownerName || "their"}'s frat house`;
   }
+  if (hit.kind === "coffeeshop"){
+    if (isOnShift()) return "Coffee Shop (you're on shift)";
+    if (shiftSize() >= 3) return "Coffee Shop — shift's full (3/3)";
+    return `Clock in at the Coffee Shop (${shiftSize()}/3)`;
+  }
   const s = hit.ref;
   if (s.type === "seed") return "Tap to eat seed";
   if (s.type === "gym") return stats.protein > 0 ? "Tap to lift" : "Nothing to lift — eat seed first";
@@ -633,11 +672,14 @@ function interactableDisabled(hit){
     const house = getFratHouses()[hit.ref.id] || { ownerUid: null, locked: false };
     return !!house.ownerUid && house.ownerUid !== uid && house.locked;
   }
+  if (hit.kind === "coffeeshop"){
+    return !isOnShift() && shiftSize() >= 3;
+  }
   return false;
 }
 
 function triggerInteraction(){
-  if (!running || isJailed() || chatOpen || houseModalOpen || closetModalOpen || !nearestInteractable) return;
+  if (!running || isJailed() || chatOpen || houseModalOpen || closetModalOpen || coffeeShopModalOpen || coffeeMinigameOpen || !nearestInteractable) return;
 
   if (nearestInteractable.kind === "chick"){
     if (player.carrying.length >= carryCapacity()) return;
@@ -655,6 +697,11 @@ function triggerInteraction(){
 
   if (nearestInteractable.kind === "frathouse"){
     enterOrBuyHouse(nearestInteractable.ref);
+    return;
+  }
+
+  if (nearestInteractable.kind === "coffeeshop"){
+    openCoffeeShop();
     return;
   }
 
@@ -723,6 +770,128 @@ async function enterOrBuyHouse(house){
   activeHouseId = house.id;
   houseModalOpen = true;
   renderHouseModal();
+}
+
+/* ==================== coffee shop (world/shift plumbing — minigame itself is a separate module, see GEMINI_PROMPT_coffee_shop.md) ==================== */
+function openCoffeeShop(){
+  coffeeShopModalOpen = true;
+  renderCoffeeShopModal();
+  coffeeShopModalEl.hidden = false;
+}
+function closeCoffeeShopModal(){
+  coffeeShopModalOpen = false;
+  coffeeShopModalEl.hidden = true;
+}
+
+function renderCoffeeShopModal(){
+  const roster = getShiftRoster();
+  const rosterEntries = Object.entries(roster);
+  const onShiftNow = isOnShift();
+
+  let rosterHtml = '<div class="trophy-shelf">';
+  if (rosterEntries.length === 0){
+    rosterHtml += '<span class="trophy-empty">Nobody\'s clocked in right now.</span>';
+  }else{
+    rosterHtml += rosterEntries.map(([id, data]) =>
+      `<span class="trophy-icon" style="font-size:0.85rem;">☕ ${escapeHTML(data.name || "Chicken")}${id === uid ? " (you)" : ""}</span>`
+    ).join("");
+  }
+  rosterHtml += "</div>";
+
+  let actionHtml;
+  if (onShiftNow){
+    actionHtml = `
+      <button type="button" class="btn" id="coffee-play-btn">Run the Register ☕</button>
+      <button type="button" class="btn light" id="coffee-clockout-btn">Clock Out</button>
+    `;
+  }else if (rosterEntries.length >= 3){
+    actionHtml = `<p style="text-align:center; font-size:0.85rem; opacity:0.75;">Shift's full — check back later.</p>`;
+  }else{
+    actionHtml = `<button type="button" class="btn" id="coffee-clockin-btn">Clock In</button>`;
+  }
+
+  coffeeShopBodyEl.innerHTML = `
+    <p style="text-align:center; font-size:0.85rem; opacity:0.8;">
+      Up to 3 chickens on shift at once, sharing everything the register earns.
+      Coffee Clucks: <strong>${Math.floor(stats.clucks)}</strong>
+    </p>
+    ${rosterHtml}
+    <div class="house-actions">${actionHtml}</div>
+  `;
+
+  if (onShiftNow){
+    document.getElementById("coffee-play-btn").addEventListener("click", openCoffeeMinigame);
+    document.getElementById("coffee-clockout-btn").addEventListener("click", async () => {
+      await clockOut(uid);
+      renderCoffeeShopModal();
+    });
+  }else if (rosterEntries.length < 3){
+    document.getElementById("coffee-clockin-btn").addEventListener("click", async () => {
+      const result = await clockIn(uid, displayName);
+      if (!result.ok) showToast("Shift just filled up — try again in a bit", COLORS.fowlRed);
+      renderCoffeeShopModal();
+    });
+  }
+}
+
+/* ---------------- the actual minigame — see coffee-shop-minigame.js ---------------- */
+function openCoffeeMinigame(){
+  if (!isOnShift() || coffeeMinigame) return;
+  coffeeShopModalEl.hidden = true;
+  coffeeMinigameOpen = true;
+  coffeeMinigameContainerEl.innerHTML = "";
+
+  coffeeMinigame = new CoffeeShopMinigame(coffeeMinigameContainerEl, {
+    localPlayerId: uid,
+    isOrderAuthority: getOrderAuthorityUid() === uid
+  });
+
+  coffeeMinigame.onStateChange((event) => broadcastMinigameEvent(event));
+
+  coffeeMinigame.onOrderComplete(async ({ value }) => {
+    if (value <= 0) return;
+    const myShare = await distributeOrderEarnings(value);
+    stats.clucks += myShare;
+    queuePatch({ clucks: stats.clucks });
+    showToast(`Order done! +${myShare.toFixed(1)} Clucks (your share)`, COLORS.cloutGreen);
+  });
+
+  coffeeMinigame.start();
+  coffeeMinigameEl.hidden = false;
+}
+
+function closeCoffeeMinigame(){
+  if (coffeeMinigame){
+    coffeeMinigame.stop();
+    coffeeMinigame = null;
+  }
+  coffeeMinigameOpen = false;
+  coffeeMinigameEl.hidden = true;
+  coffeeShopModalOpen = true;
+  renderCoffeeShopModal();
+  coffeeShopModalEl.hidden = false;
+}
+
+/** Relay incoming multiplayer events into the running minigame, and keep order-spawn
+    authority up to date in case the current authority clocks out mid-shift. */
+function updateCoffeeMinigameSync(){
+  if (!coffeeMinigame) return;
+  const events = consumeMinigameEvents();
+  events.forEach(event => coffeeMinigame.applyRemoteEvent(event));
+  coffeeMinigame.setOrderAuthority(getOrderAuthorityUid() === uid);
+  if (!isOnShift()) closeCoffeeMinigame(); // e.g. got dropped from shift by someone else's action
+}
+
+function updateCoffeeEarnings(){
+  const earnings = consumeCoffeeEarnings();
+  if (!earnings.length) return;
+  let total = 0;
+  earnings.forEach(e => { total += e.amount || 0; });
+  if (total > 0){
+    stats.clucks += total;
+    queuePatch({ clucks: stats.clucks });
+    showToast(`+${total.toFixed(1)} Clucks from the shift!`, COLORS.cloutGreen);
+  }
 }
 
 /* ==================== house modal, closet, shrine ==================== */
@@ -925,7 +1094,7 @@ function playerNearBathroom(){
   return Math.hypot(player.x - bathroom.x, player.y - bathroom.y) < STATION_RADIUS;
 }
 function doPee(){
-  if (!running || isJailed() || chatOpen || houseModalOpen || closetModalOpen) return;
+  if (!running || isJailed() || chatOpen || houseModalOpen || closetModalOpen || coffeeShopModalOpen || coffeeMinigameOpen) return;
   if (isToiletDisabled() || !playerNearBathroom()) return;
   const relief = Math.min(stats.beerLevel, PEE_RELIEF_AMOUNT);
   stats.beerLevel = Math.max(0, stats.beerLevel - PEE_RELIEF_AMOUNT);
@@ -933,7 +1102,7 @@ function doPee(){
   if (DEBUG) console.log("[ChickenFrat] peed — beer level now", stats.beerLevel);
 }
 function doPoop(){
-  if (!running || isJailed() || chatOpen || houseModalOpen || closetModalOpen) return;
+  if (!running || isJailed() || chatOpen || houseModalOpen || closetModalOpen || coffeeShopModalOpen || coffeeMinigameOpen) return;
   if (isToiletDisabled() || !playerNearBathroom()) return;
   toiletDisabledUntil = Date.now() + TOILET_DISABLED_MS;
   triggerPartyFowl("poop");
@@ -941,7 +1110,7 @@ function doPoop(){
   if (DEBUG) console.log("[ChickenFrat] pooped — instant Party Fowl, toilet out of order for 60s");
 }
 function doPoolPee(){
-  if (!running || isJailed() || chatOpen || houseModalOpen || closetModalOpen) return;
+  if (!running || isJailed() || chatOpen || houseModalOpen || closetModalOpen || coffeeShopModalOpen || coffeeMinigameOpen) return;
   if (!playerInPool()) return;
   triggerPartyFowl("pool-pee");
   showToast("PARTY FOWL! You peed in the pool", COLORS.fowlRed);
@@ -1147,6 +1316,8 @@ function update(){
   updateCockfight();
   updateKeyDrop();
   updatePledges();
+  updateCoffeeEarnings();
+  updateCoffeeMinigameSync();
   updateCarRoadCheck();
   if (toast && toast.framesLeft > 0) toast.framesLeft--;
 }
@@ -1508,8 +1679,42 @@ function drawPerimeter(){
   drawPropertyFence();
 
   fratHouses.forEach(drawFratHouse);
+  drawCoffeeShop();
   drawCar();
   chicks.forEach(c => { if (!c.carried && c.roamRect === ROAM_ZONES.street) drawChick(c); });
+}
+
+function drawCoffeeShop(){
+  const { x, y } = COFFEE_SHOP;
+  const w = 100, h = 60;
+
+  ctx.fillStyle = COLORS.coffeeWall;
+  ctx.fillRect(x - w / 2, y - h / 2, w, h);
+  ctx.strokeStyle = COLORS.wallLine;
+  ctx.lineWidth = 2;
+  ctx.strokeRect(x - w / 2, y - h / 2, w, h);
+
+  // striped awning
+  ctx.fillStyle = COLORS.coffeeAwning;
+  ctx.fillRect(x - w / 2 - 6, y - h / 2 - 14, w + 12, 16);
+  ctx.strokeRect(x - w / 2 - 6, y - h / 2 - 14, w + 12, 16);
+  ctx.fillStyle = COLORS.coffeeRoof;
+  for (let i = 0; i < 6; i++){
+    ctx.fillRect(x - w / 2 - 6 + i * ((w + 12) / 6), y - h / 2 - 14, (w + 12) / 12, 16);
+  }
+
+  ctx.fillStyle = COLORS.door;
+  ctx.fillRect(x - 14, y + h / 2 - 26, 28, 26);
+
+  ctx.font = "20px sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText("☕", x, y - h / 2 - 22);
+
+  const shiftCount = shiftSize();
+  ctx.font = "700 11px 'Baloo 2', sans-serif";
+  ctx.fillStyle = COLORS.wallLine;
+  ctx.fillText(`Coffee Shop (${shiftCount}/3)`, x, y + h / 2 + 16);
+  ctx.textAlign = "left";
 }
 
 /* ---------------- building toppers (roof, chimney, windows, door, signage) ---------------- */
@@ -2023,6 +2228,27 @@ function drawToast(){
 }
 
 /* ==================== HUD sync ==================== */
+/** Convert a point in game/canvas coordinates to actual on-screen CSS pixels relative to #game-wrap.
+    Necessary because the canvas is rendered at a fixed internal resolution (CANVAS_W x CANVAS_H) but
+    CSS (max-width/max-height: 100%) can scale it down to fit the viewport — without this conversion,
+    popups positioned using raw game coordinates drift further off-target the more the canvas is scaled
+    down, which is especially visible for anything near the outer edge (like the frat houses). */
+function canvasPos(x, y){
+  const canvasRect = canvas.getBoundingClientRect();
+  const wrapRect = gameWrapEl.getBoundingClientRect();
+  const scaleX = canvasRect.width / CANVAS_W;
+  const scaleY = canvasRect.height / CANVAS_H;
+  return {
+    left: (canvasRect.left - wrapRect.left) + x * scaleX,
+    top: (canvasRect.top - wrapRect.top) + y * scaleY
+  };
+}
+function positionEl(el, x, y){
+  const p = canvasPos(x, y);
+  el.style.left = p.left + "px";
+  el.style.top = p.top + "px";
+}
+
 function syncHud(){
   document.getElementById("meter-protein-fill").style.width = (stats.protein / PROTEIN_MAX * 100) + "%";
   document.getElementById("meter-protein-value").textContent = Math.floor(stats.protein);
@@ -2031,34 +2257,31 @@ function syncHud(){
   document.getElementById("meter-strength-value").textContent = Math.floor(stats.baseStrength + stats.strengthBoost);
   document.getElementById("meter-clout-value").textContent = Math.floor(stats.clout);
   document.getElementById("trophy-value").textContent = stats.trophies.wolf + stats.trophies.cockfight;
+  document.getElementById("meter-clucks-value").textContent = Math.floor(stats.clucks);
 
   const nearBathroomStation = nearestInteractable && nearestInteractable.kind === "station" && nearestInteractable.ref.type === "bathroom";
 
-  if (nearBathroomStation && !isJailed() && !houseModalOpen && !closetModalOpen){
+  if (nearBathroomStation && !isJailed() && !houseModalOpen && !closetModalOpen && !coffeeShopModalOpen && !coffeeMinigameOpen){
     const s = nearestInteractable.ref;
     if (isToiletDisabled()){
       stationBtn.hidden = false;
       stationBtn.textContent = "Toilet out of order (" + Math.ceil((toiletDisabledUntil - Date.now()) / 1000) + "s)";
-      stationBtn.style.left = s.x + "px";
-      stationBtn.style.top = s.y + "px";
+      positionEl(stationBtn, s.x, s.y);
       stationBtn.disabled = true;
       toiletPeeBtn.hidden = true;
       toiletPoopBtn.hidden = true;
     }else{
       stationBtn.hidden = true;
       toiletPeeBtn.hidden = false;
-      toiletPeeBtn.style.left = s.x + "px";
-      toiletPeeBtn.style.top = s.y + "px";
+      positionEl(toiletPeeBtn, s.x, s.y);
       toiletPoopBtn.hidden = false;
-      toiletPoopBtn.style.left = s.x + "px";
-      toiletPoopBtn.style.top = (s.y - 46) + "px";
+      positionEl(toiletPoopBtn, s.x, s.y - 46);
     }
   }else if (nearestInteractable && !isJailed()){
     stationBtn.hidden = false;
     const anchor = nearestInteractable.ref;
     stationBtn.textContent = interactableLabel(nearestInteractable);
-    stationBtn.style.left = anchor.x + "px";
-    stationBtn.style.top = anchor.y + "px";
+    positionEl(stationBtn, anchor.x, anchor.y);
     stationBtn.disabled = interactableDisabled(nearestInteractable);
     toiletPeeBtn.hidden = true;
     toiletPoopBtn.hidden = true;
@@ -2068,18 +2291,16 @@ function syncHud(){
     toiletPoopBtn.hidden = true;
   }
 
-  if (playerInPool() && !isJailed() && !chatOpen && !houseModalOpen && !closetModalOpen){
+  if (playerInPool() && !isJailed() && !chatOpen && !houseModalOpen && !closetModalOpen && !coffeeShopModalOpen && !coffeeMinigameOpen){
     poolPeeBtn.hidden = false;
-    poolPeeBtn.style.left = player.x + "px";
-    poolPeeBtn.style.top = (player.y - 30) + "px";
+    positionEl(poolPeeBtn, player.x, player.y - 30);
   }else{
     poolPeeBtn.hidden = true;
   }
 
   if (chunderActive){
     chunderClockEl.hidden = false;
-    chunderClockEl.style.left = (player.x - 37) + "px";
-    chunderClockEl.style.top = (player.y - 100) + "px";
+    positionEl(chunderClockEl, player.x - 37, player.y - 100);
     const frac = chunderFramesLeft / CHUNDER_COUNTDOWN_FRAMES;
     chunderRingFg.style.strokeDashoffset = String(CHUNDER_RING_CIRCUMFERENCE * (1 - frac));
     chunderSecondsEl.textContent = Math.ceil(chunderFramesLeft / 60);
@@ -2120,6 +2341,7 @@ function stopLoop(){ running = false; if (animId){ cancelAnimationFrame(animId);
 /* ==================== init ==================== */
 function initGame(){
   canvas = document.getElementById("game-canvas");
+  gameWrapEl = document.getElementById("game-wrap");
   canvas.width = CANVAS_W;
   canvas.height = CANVAS_H;
   ctx = canvas.getContext("2d");
@@ -2142,16 +2364,25 @@ function initGame(){
   closetModalEl = document.getElementById("closet-modal");
   closetGridEl = document.getElementById("closet-grid");
 
+  coffeeShopModalEl = document.getElementById("coffee-shop-modal");
+  coffeeShopBodyEl = document.getElementById("coffee-shop-body");
+  coffeeMinigameEl = document.getElementById("coffee-minigame-overlay");
+  coffeeMinigameContainerEl = document.getElementById("coffee-minigame-container");
+
   stationBtn.addEventListener("click", triggerInteraction);
   toiletPeeBtn.addEventListener("click", doPee);
   toiletPoopBtn.addEventListener("click", doPoop);
   poolPeeBtn.addEventListener("click", doPoolPee);
   document.getElementById("house-modal-close-btn").addEventListener("click", closeHouseModal);
   document.getElementById("closet-close-btn").addEventListener("click", closeCloset);
+  document.getElementById("coffee-shop-close-btn").addEventListener("click", closeCoffeeShopModal);
+  document.getElementById("coffee-minigame-close-btn").addEventListener("click", closeCoffeeMinigame);
 
   document.addEventListener("keydown", (e) => {
     if (e.code !== "Escape") return;
-    if (closetModalOpen){ closeCloset(); }
+    if (coffeeMinigameOpen){ closeCoffeeMinigame(); }
+    else if (closetModalOpen){ closeCloset(); }
+    else if (coffeeShopModalOpen){ closeCoffeeShopModal(); }
     else if (houseModalOpen){ closeHouseModal(); }
   });
 
