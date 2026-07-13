@@ -2,24 +2,43 @@
 
 A 2D top-down social hangout / idle clicker — Club Penguin meets Animal Crossing, wrapped in goofy fraternity satire.
 
-## Status: Phase 1
+## Status: Phase 3
 
 This build has:
-- A single map with four zones (Frat House Interior, Gym, Backyard, Front Lawn)
-- The three core clickers: **Eat Seed** → fills Protein, **Work Out** → converts Protein into permanent Strength (no gains without seed, per the brief), **Drink Beer** → temporary Strength boost + speed penalty + wobble
-- The **Chunder Clock**: max out your Beer meter and you've got 10 seconds to reach the bathroom stall before it's a **Party Fowl** (5-minute beer lockout)
-- Firebase Auth (email/password + Google) and Firestore-backed persistent Strength, so progress survives a refresh
+- **A full-perimeter map**: the original property (Backyard/House/Front Lawn in the middle column, Forest/Gym/Pool on the right, a second Forest + Jail on the left) now sits in the center of a ring road that wraps all four sides, with a sidewalk and a row of frat houses beyond that on every side — **16 total, 4 per side**
+- **Buy a frat house key** for 150 Clout (first click wins — buying is an atomic Firestore transaction so two players can't both grab the same house). Owners can **lock/unlock** their house (locked = inaccessible to everyone but the owner) and **paint** it any of 8 colors, visible to everyone
+- **Pledging**: visit someone else's house and pledge 100 Clout to the owner — a genuine peer-to-peer Clout gift, no strings attached
+- **Get too drunk (Beer meter ≥ 90) while you own a house and you drop the key** — ownership clears and it's up for grabs again
+- **Inside your house**: a trophy shelf (every cockfight/wolf win, also totaled in the HUD nav bar), the **Closet** for buying/equipping merch across 4 slots (head/face/neck/feet — glasses, gold chains, hats, bows, shoes), and the **Golden Chicken Shrine** (100 Clout, 5% shot at permanently doubling your size, once ever). Visitors to an unlocked house see the trophy shelf and can pledge, but can't use the closet or shrine
+- **A drivable car** — hop in for a real speed boost. **Drive drunk (Beer ≥ 30) and it's straight to jail.** **Drive off the actual road surface and it's also straight to jail** (a brief ~⅓ second grace window keeps one noisy frame near the curb from insta-busting you)
+- **Every trip to jail costs 100 Clout**, whatever got you there
+- **The Pool**: wading through it applies a heavy speed penalty, and a "Pee in the pool 💦" button appears the moment you're standing in the water
+- **A real toilet** at the Bathroom Stall with two distinct actions: **Pee** brings your Beer meter down, **Poop** breaks the toilet for 60 seconds
+- **Two intentionally undisclosed Party Fowl triggers**: peeing in the pool and pooping in the toilet are both instant Party Fowls, but neither button says so up front
+- The three core clickers: **Eat Seed** → Protein, **Work Out** → Strength (no gains without seed), **Drink Beer** → temporary Strength boost + genuine involuntary drift once you're drunk enough
+- The **Chunder Clock**: max Beer meter gives you 10 seconds to reach the bathroom before a Party Fowl
+- **Ten pickup-able chicks**, each with a distinct cosmetic, wandering their own patch of the map. Carry them to the House for Clout — capacity scales with Strength
+- **A second Party Fowl trigger**: bring the same chick home twice within 5 minutes
+- **Jail**: 3 Party Fowls in a rolling 5-minute window locks you up for 60 seconds (on top of the 100 Clout hit)
+- **Wolves** wandering both Forest patches, each doubling its own strength every time it's defeated so farming one stops working fast
+- **Live multiplayer**: other players appear in real time, wearing their equipped merch, shown as a car if driving, and rendered at 2x size if shrine-blessed
+- **The Cockfight Ring**: real-time matchmaking between two players, Strength-weighted odds (never a sure thing), winner gets Clout + a random piece of merch
+- **A Coffee Shop** at the bottom-left corner of the map, beyond the road — clock in (up to 3 players on shift at once, sharing everything the register earns), then run the actual order-running minigame: take orders at the POS, grind espresso (with a real 1-in-7 jam chance), pull shots, add syrup, steam milk against a thermometer, pour, and hand off — plus the 1-in-20 plain-black-coffee case with its own drip pot that needs rebrewing every 5 cups. Orders expire after 45 seconds. A new **Clucks** currency, earned 3-12 per drink depending on complexity and how clean the execution was, split across whoever's on shift
+- **Proximity chat**: Enter to open, type, Enter to send — and WASD/Enter/Space are correctly ignored while any text field (sign-in, sign-up, chat) has focus, so typing works properly everywhere including the auth forms
+- Firebase Auth + Firestore-backed persistent Strength, Clout, merch, trophies, and shrine status
 
-**Not yet built** (map signposts for these are visible but inert — see roadmap below): picking up chicks, the Cockfight Ring PvP, cosmetics, proximity chat, the slur filter, and seeing other players in real time.
+**Not yet built**: the slur filter, and Sloppy Mac (Party Fowl for attempting a chick pickup while max-drunk).
 
 ## Controls
 
 - **Move:** WASD or arrow keys
-- **Interact:** walk up to a station's glowing icon, then click the button that pops up (or press Space)
+- **Interact:** walk up to a station, a loose chick, the car, or a frat house, then click the button that pops up (or press Space)
+- **Chat:** press Enter to open the chat bar, type your message, Enter to send (Esc to cancel)
+- **Modals** (frat house / closet): Esc closes whichever is open
 
 ## Setup
 
-See [`FIREBASE_SETUP.md`](./FIREBASE_SETUP.md) for a step-by-step guide to creating your Firebase project, enabling Auth + Firestore, and deploying to GitHub Pages. Until you've pasted your config into `js/firebase-init.js`, the game runs fine locally but shows a "not connected" notice instead of the sign-in form.
+See [`FIREBASE_SETUP.md`](./FIREBASE_SETUP.md) for a step-by-step guide to creating your Firebase project, enabling Auth + Firestore + Realtime Database, and deploying to GitHub Pages — including the security rules needed for the shared `fratHouses` Firestore collection and the RTDB `/pledges` path. Until Firestore is configured, the game shows a "not connected" notice instead of the sign-in form; until Realtime Database's `databaseURL` is set, the game runs fine single-player with multiplayer (Cockfight Ring matchmaking, pledges) silently disabled.
 
 ## Project structure
 
@@ -29,20 +48,43 @@ chicken-frat/
 ├── css/
 │   └── style.css
 ├── js/
-│   ├── firebase-init.js   ← paste your Firebase config here
+│   ├── firebase-init.js   ← paste your Firebase config here (incl. databaseURL)
 │   ├── auth.js             sign-up/in, Google auth, auth state
-│   ├── player-data.js       Firestore read/write (throttled)
-│   └── game.js              canvas rendering, movement, clickers
+│   ├── player-data.js       Firestore read/write — Strength, Clout, merch, trophies (throttled)
+│   ├── multiplayer.js       Realtime Database — live positions, proximity chat, Cockfight Ring matchmaking, house pledges
+│   ├── frat-houses.js       Firestore — shared house ownership/lock/paint state, atomic buy transaction
+│   ├── coffee-shop.js       Realtime Database — shift roster (max 3), shared-earnings distribution, minigame event relay
+│   ├── coffee-shop-minigame.js  the actual order-running minigame engine (from Gemini, patched for multiplayer-safety)
+│   └── game.js              canvas rendering, movement, clickers, wolves, jail, car, houses, closet, shrine
 ├── FIREBASE_SETUP.md
 └── README.md
 ```
 
-Every tunable number (speeds, meter maxes, cooldowns, the Chunder Clock countdown, the Party Fowl lockout duration) lives in the `CONFIG` block at the top of `game.js` — change a value, reload the page, no backend involved.
+Every tunable number (speeds, meter maxes, cooldowns, the jail threshold/duration/penalty, wolf strength range, carry capacity scaling, key cost, pledge amount, shrine odds, DUI/off-road thresholds) lives in the `CONFIG` block at the top of `game.js` — change a value, reload the page, no backend involved.
+
+## Coffee Shop minigame — built and wired in
+
+This was built in two parallel workstreams and is now fully connected:
+
+- **World/economy plumbing** (built directly, this codebase): the building, clocking in/out, the 3-person shift roster synced live via Realtime Database, the **Clucks** currency, and shared-earnings distribution reusing the same "peer writes into your inbox, you claim it yourself" pattern already established for house pledges and Cockfight Ring results.
+- **The actual minigame engine** (`js/coffee-shop-minigame.js`): built by Gemini from [`GEMINI_PROMPT_coffee_shop.md`](./GEMINI_PROMPT_coffee_shop.md) as a self-contained class, then patched here before integration. The delivered engine's POS logic, station mechanics, and scoring formula were solid, but running it through an actual test harness (not just a syntax check) surfaced five real bugs, all fixed before shipping:
+  1. The grinder's jam chance was rolling continuously every frame during a grind (~55% jam rate) instead of the spec'd 1-in-7 — changed to a single roll per grind.
+  2. `applyRemoteEvent()` had no handler for the `ORDER_SPAWNED` event the engine itself emits, so a remote player would never actually receive new orders.
+  3. Every client running its own independent copy of the engine would have spawned its own divergent order queue and rolled its own random jams — added a lightweight authority model (only the client that locally started a station's action simulates its progress; order-spawning is gated to whichever on-shift player has been there longest) rather than a full host/server rework.
+  4. The POS modifier check compared against a field name (`order.mod`) that doesn't exist on the order object (the real field is `order.modifier`), so every modifier selection silently counted as a mistake even when correct — and that miscount was also double-added on top of a separate, correct check at submit time.
+  5. A fully-loaded order's value could reach 14.4 Clucks, above the requested 3–12 range, since the syrup and modifier multipliers stack — added an explicit cap.
+
+**Known limitation worth being upfront about**: because of the lightweight authority model above (chosen over a full host/server rework), a player who isn't the one operating a given station won't see perfectly smooth live progress bars for it — they'll see it start, then jump straight to the result when it finishes. Order taking, syrup selection, drip pot state, and hand-off are all fully live and synced; only the continuous progress-bar animation for grinding/pulling/steaming is coarser for onlookers than for the person actually doing it.
+
+## Scoping decisions worth knowing about
+
+- **Frat house interiors are modal/menu screens**, not a second walkable room. Walking up to a house's door and interacting opens a popup with the trophy shelf plus (if you're the owner) the closet, shrine, lock toggle, and paint picker — rather than teleporting you into a separate indoor scene. A true walkable interior would mean a second camera/room system, a closet-pile sprite, a separate shrine zone, etc. — roughly doubling this feature's size for a purely presentational upgrade. Every piece of described functionality works exactly as specified; it's just reached through a menu.
+- **All 16 houses use the same unrotated building sprite** regardless of which side of the map they're on — the roof/door always face "up" on screen rather than properly rotating to face the road on all 4 sides. Correctly rotating building art per-side would need a meaningfully bigger art pass for what's mostly a presentational detail.
+- **Pledging is peer-to-peer with no backend**: the pledger deducts their own Clout immediately (their own Firestore doc, which they can always write) and drops a message in the target owner's Realtime Database inbox; the owner's own client picks it up and credits their own Clout next time they're online. This means an offline house owner won't see pledged Clout until they next open the game — a reasonable tradeoff for a project with no server, same pattern already used for Cockfight Ring results.
 
 ## Roadmap
 
-- **Phase 2:** Realtime Database for live multiplayer positions + proximity chat bubbles that fade with distance
-- **Phase 3:** Picking up chicks for XP/Clout, Sloppy Mac penalty, the slur filter in chat
-- **Phase 4:** Cockfight Ring auto-battler PvP based on Strength, cosmetic unlocks and customization
+- **Next up:** the slur filter in chat, and Sloppy Mac. Also worth considering for the Coffee Shop: smoother cross-player progress-bar syncing (see the known limitation above) if the coarser version turns out to feel bad in practice.
+- Also worth considering: server-side validation (Cloud Functions) for the Cockfight Ring and pledge system if either ever needs to be griefer-resistant, and the walkable-frat-house-interior and per-side-rotated-house-art upgrades described above.
 
-Each phase builds on this one without needing to rearchitect what's already here — Firestore stays the source of truth for slow-changing per-player stats, and Realtime Database (added in Phase 2) will own the fast-changing, ephemeral stuff like live position and chat.
+Firestore stays the source of truth for slow-changing per-player stats (Strength, Clout, merch, trophies) *and* for shared cross-player state that changes rarely (frat house ownership/lock/paint); Realtime Database owns the fast-changing, ephemeral, and peer-to-peer stuff (live position, chat, Cockfight Ring matchmaking, pledges) — that split was designed in from Phase 1 specifically so each new system could slot into whichever store actually fits its access pattern, without rearchitecting anything already built.
