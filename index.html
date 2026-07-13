@@ -30,6 +30,10 @@
         <span class="meter-icon">🏆</span>
         <span class="meter-value big" id="trophy-value">0</span>
       </div>
+      <div class="meter meter-clucks" title="Clucks (Coffee Shop earnings)">
+        <span class="meter-icon">☕</span>
+        <span class="meter-value big" id="meter-clucks-value">0</span>
+      </div>
       <div class="meter meter-beer" title="Beer Level">
         <span class="meter-icon">🍺</span>
         <div class="meter-track"><div class="meter-fill" id="meter-beer-fill"></div></div>
@@ -50,7 +54,7 @@
 
   <!-- ===================== GAME WORLD ===================== -->
   <main id="game-wrap">
-    <canvas id="game-canvas" width="1300" height="940" tabindex="0"></canvas>
+    <canvas id="game-canvas" width="1420" height="1060" tabindex="0"></canvas>
 
     <!-- Contextual action prompt near stations -->
     <button id="station-action-btn" class="station-action-btn" type="button" hidden></button>
@@ -135,6 +139,23 @@
       <p class="closet-subtitle">Spend Clout on merch. Tap an owned item to equip it.</p>
       <div id="closet-grid" class="closet-grid"></div>
       <button type="button" class="btn light" id="closet-close-btn">Close Closet</button>
+    </div>
+  </div>
+
+  <!-- ===================== COFFEE SHOP MODAL ===================== -->
+  <div id="coffee-shop-modal" class="overlay" hidden>
+    <div class="overlay-card house-card">
+      <h2>☕ The Coffee Shop</h2>
+      <div id="coffee-shop-body"></div>
+      <button type="button" class="btn light" id="coffee-shop-close-btn">Leave</button>
+    </div>
+  </div>
+
+  <!-- ===================== COFFEE SHOP MINIGAME ===================== -->
+  <div id="coffee-minigame-overlay" class="overlay" hidden>
+    <div class="overlay-card minigame-card">
+      <div id="coffee-minigame-container"></div>
+      <button type="button" class="btn light" id="coffee-minigame-close-btn">Leave the Register</button>
     </div>
   </div>
 
