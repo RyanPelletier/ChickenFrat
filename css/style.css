@@ -470,3 +470,19 @@ button, input{ font-family: inherit; }
   background: var(--cf-grass);
 }
 .closet-item button:disabled{ background: #E0DACB; cursor: not-allowed; opacity: 0.7; }
+
+.minigame-card{
+  width: min(940px, 96vw);
+  max-height: 92vh;
+  overflow: hidden;
+  padding: 16px;
+  text-align: center;
+}
+#coffee-minigame-container{
+  width: 100%;
+  line-height: 0; /* avoid extra gap under the canvas */
+  border: 3px solid var(--cf-navy);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  margin-bottom: 12px;
+}
