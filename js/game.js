@@ -654,9 +654,7 @@ function interactableLabel(hit){
     return `Enter ${house.ownerName || "their"}'s frat house`;
   }
   if (hit.kind === "coffeeshop"){
-    if (isOnShift()) return "Coffee Shop (you're on shift)";
-    if (shiftSize() >= 3) return "Coffee Shop — shift's full (3/3)";
-    return `Clock in at the Coffee Shop (${shiftSize()}/3)`;
+    return "Coffee Shop — Coming Soon 🚧";
   }
   const s = hit.ref;
   if (s.type === "seed") return "Tap to eat seed";
@@ -673,7 +671,7 @@ function interactableDisabled(hit){
     return !!house.ownerUid && house.ownerUid !== uid && house.locked;
   }
   if (hit.kind === "coffeeshop"){
-    return !isOnShift() && shiftSize() >= 3;
+    return true; // parked — see "Coming Soon" sign, not ready for players yet
   }
   return false;
 }
@@ -701,8 +699,7 @@ function triggerInteraction(){
   }
 
   if (nearestInteractable.kind === "coffeeshop"){
-    openCoffeeShop();
-    return;
+    return; // parked for now — see interactableDisabled/Label above
   }
 
   const s = nearestInteractable.ref;
@@ -1710,10 +1707,27 @@ function drawCoffeeShop(){
   ctx.textAlign = "center";
   ctx.fillText("☕", x, y - h / 2 - 22);
 
-  const shiftCount = shiftSize();
+  // Red "Coming Soon" sign, hanging off the awning — the shop isn't playable yet
+  const signW = 96, signH = 20;
+  const signY = y - h / 2 - 34;
+  ctx.fillStyle = COLORS.fowlRed;
+  ctx.strokeStyle = COLORS.wallLine;
+  ctx.lineWidth = 2;
+  ctx.fillRect(x - signW / 2, signY, signW, signH);
+  ctx.strokeRect(x - signW / 2, signY, signW, signH);
+  // little chains connecting the sign to the awning
+  ctx.beginPath();
+  ctx.moveTo(x - signW / 2 + 8, signY); ctx.lineTo(x - w / 2 + 4, y - h / 2 - 14);
+  ctx.moveTo(x + signW / 2 - 8, signY); ctx.lineTo(x + w / 2 - 4, y - h / 2 - 14);
+  ctx.stroke();
+
+  ctx.fillStyle = "#FFFFFF";
+  ctx.font = "700 11px 'Baloo 2', sans-serif";
+  ctx.fillText("COMING SOON", x, signY + signH / 2 + 4);
+
   ctx.font = "700 11px 'Baloo 2', sans-serif";
   ctx.fillStyle = COLORS.wallLine;
-  ctx.fillText(`Coffee Shop (${shiftCount}/3)`, x, y + h / 2 + 16);
+  ctx.fillText("Coffee Shop", x, y + h / 2 + 16);
   ctx.textAlign = "left";
 }
 
